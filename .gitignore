@@ -1,0 +1,16 @@
+__pycache__/ai.cpython-313.pyc
+__pycache__/ai.cpython-314.pyc
+__pycache__/hear.cpython-313.pyc
+__pycache__/avatar.cpython-313.pyc
+__pycache__/hear.cpython-314.pyc
+__pycache__/memory.cpython-314.pyc
+__pycache__/memory.cpython-313.pyc
+__pycache__/mood.cpython-313.pyc
+__pycache__/state.cpython-313.pyc
+__pycache__/tts.cpython-313.pyc
+__pycache__/voice.cpython-314.pyc
+voz_referencia.wav
+token_vts.json
+memoria.json
+humor.json
+emoçoes.txt
