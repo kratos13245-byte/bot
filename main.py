@@ -27,6 +27,8 @@ avatar = None
 try:
     avatar = AvatarController()
     avatar.connect()
+    avatar.iniciar_idle()
+    avatar.iniciar_piscada()
 except Exception as e:
     print(f"⚠️ Avatar não conectado: {e}")
     avatar = None
@@ -38,13 +40,23 @@ def mostrar_prompt():
 
 while True:
     try:
+        # =========================
+        # QUEBRA DE SILÊNCIO
+        # =========================
         if not modo_mic_live:
             agora = time.time()
 
             if agora - ultimo_input > TEMPO_SILENCIO:
                 print("\n💭 IA puxando assunto...")
 
+                if avatar:
+                    avatar.pensando_on()
+
                 resposta = gerar_assunto()
+
+                if avatar:
+                    avatar.pensando_off()
+
                 texto = resposta["texto"]
                 emocao = resposta["emocao"]
 
@@ -61,16 +73,23 @@ while True:
                 falar(
                     texto,
                     emocao=emocao,
-                    #on_start=(avatar.falando_on if avatar else None),
-                    #on_end=(avatar.falando_off if avatar else None),
                     avatar=avatar,
                 )
 
                 salvar_historico("ia", texto, emocao)
                 ultimo_input = time.time()
 
+        # =========================
+        # MODO MIC-LIVE
+        # =========================
         if modo_mic_live:
+            if avatar:
+                avatar.escutando_on()
+
             entrada = ouvir_live_ate_texto()
+
+            if avatar:
+                avatar.escutando_off()
 
             if not entrada:
                 continue
@@ -80,6 +99,9 @@ while True:
                 print("⌨️ Voltando pro modo texto")
                 continue
 
+        # =========================
+        # MODO TEXTO
+        # =========================
         else:
             mostrar_prompt()
             entrada = input().strip()
@@ -89,25 +111,19 @@ while True:
 
             ultimo_input = time.time()
 
-            if entrada == "/testemouth":
-                if avatar:
-                    print("Testando boca...")
-
-                    for i in range(10):
-                        valor = i / 10
-                        print("valor:", valor)
-                        avatar.set_mouth_value(valor)
-                        time.sleep(0.2)
-
-                    avatar.set_mouth_value(0.0)
-                continue
-
             if entrada == "/sair":
                 print("Encerrando...")
                 break
 
             if entrada == "/mic":
+                if avatar:
+                    avatar.escutando_on()
+
                 entrada = ouvir()
+
+                if avatar:
+                    avatar.escutando_off()
+
                 if not entrada:
                     continue
 
@@ -116,6 +132,9 @@ while True:
                 print("👂 Escuta contínua ativada")
                 continue
 
+            # =========================
+            # TESTE DE ANIMAÇÃO
+            # =========================
             if entrada == "/testeanim":
                 if avatar:
                     print("🎭 Testando animações...")
@@ -124,23 +143,42 @@ while True:
                     avatar.trigger_hotkey("exp_irritada")
                     time.sleep(1)
 
-                    avatar.trigger_hotkey("emo_debochada")
+                    avatar.trigger_hotkey("emo_choque")
                     time.sleep(1)
 
                     avatar.trigger_hotkey("exp_animada")
                     time.sleep(1)
 
-                    avatar.trigger_hotkey("emo_animada")
+                    avatar.trigger_hotkey("emo_amor")
                     time.sleep(1)
 
+                    avatar.set_idle_values(eye_x=0.8, eye_y=0.0, head_x=0.2, head_y=0.1)
+                    time.sleep(1)
+
+                    avatar.set_idle_values(eye_x=-0.8, eye_y=0.0, head_x=-0.2, head_y=0.0)
+                    time.sleep(1)
+
+                    avatar.set_idle_values(eye_x=0.0, eye_y=0.6, head_x=0.0, head_y=0.1)
+                    time.sleep(1)
+
+                    avatar.set_idle_values(eye_x=0.0, eye_y=-0.6, head_x=0.0, head_y=-0.1)
+                    time.sleep(1)
+
+                    avatar.piscar()
+                    time.sleep(1)
+
+                    avatar.set_idle_values(eye_x=0.0, eye_y=0.0, head_x=0.0, head_y=0.0)
+                    avatar.set_blink_values(0.0, 0.0)
                     avatar.trigger_hotkey("boca_falando_on")
                     time.sleep(1)
-
                     avatar.trigger_hotkey("boca_falando_off")
                 else:
                     print("Avatar não conectado")
                 continue
 
+            # =========================
+            # HUMOR
+            # =========================
             if entrada == "/verhumor":
                 h = carregar_humor()
                 print(f"Humor: {h['estado']} ({h['paciencia']}/10)")
@@ -151,6 +189,9 @@ while True:
                 print("Humor resetado")
                 continue
 
+            # =========================
+            # MEMÓRIA
+            # =========================
             if entrada.startswith("/anotar "):
                 partes = [p.strip() for p in entrada[8:].split("|")]
 
@@ -166,9 +207,16 @@ while True:
             if entrada == "/vernotas":
                 notas = listar_notas()
 
+                if not notas:
+                    print("Sem notas salvas.")
+                    continue
+
                 print("\n=== NOTAS ===")
                 for i, n in enumerate(notas):
-                    print(f"[{i}] {n['alvo']} -> {n['nota']}")
+                    print(f"[{i}] {n['alvo']} | {n['categoria']}")
+                    print(f"     nota: {n['nota']}")
+                    if n.get("instrucao"):
+                        print(f"     instrucao: {n['instrucao']}")
                 print("=============\n")
                 continue
 
@@ -214,13 +262,25 @@ while True:
                 print("Histórico apagado")
                 continue
 
+        # =========================
+        # HUMOR DINÂMICO
+        # =========================
         humor = ajustar_humor(entrada)
         print(
-                f"(humor: {humor['estado']} | {humor['paciencia']}/10 | "
-                f"delta: {humor['delta']} | motivo: {humor['motivo']})"
-            )
+            f"(humor: {humor['estado']} | {humor['paciencia']}/10 | "
+            f"delta: {humor['delta']} | motivo: {humor['motivo']})"
+        )
+
+        # =========================
+        # RESPOSTA DA IA
+        # =========================
+        if avatar:
+            avatar.pensando_on()
 
         resposta = gerar_resposta(entrada)
+
+        if avatar:
+            avatar.pensando_off()
 
         texto = resposta["texto"]
         emocao = resposta["emocao"]
@@ -237,11 +297,12 @@ while True:
         falar(
             texto,
             emocao=emocao,
-            on_start=(avatar.falando_on if avatar else None),
-            on_end=(avatar.falando_off if avatar else None),
             avatar=avatar,
         )
 
+        # =========================
+        # MEMÓRIA
+        # =========================
         salvar_historico("usuario", entrada)
         salvar_historico("ia", texto, emocao)
 
@@ -257,6 +318,12 @@ while True:
 
     except KeyboardInterrupt:
         print("\nEncerrando...")
+        if avatar:
+            try:
+                avatar.parar_idle()
+                avatar.parar_piscada()
+            except Exception:
+                pass
         break
 
     except Exception as e:

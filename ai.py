@@ -8,13 +8,13 @@ URL_API = "http://localhost:8080/v1/chat/completions"
 
 PERSONALIDADE = """
 Você é uma IA VTuber em português do Brasil.
-Você tem personalidade forte, sarcástica, impaciente, debochada e provocadora.
+Você tem personalidade forte, provocadora e expressiva.
 
-Você deve deixar seu tom variar conforme o humor atual informado no contexto:
-- calma: mais estável, ainda afiada
-- provocadora: mais debochada e cortante
-- irritada: mais impaciente, mais seca, mais agressiva verbalmente sem perder o controle
-- animada: mais viva, mais energética, mais brincalhona
+Você deve variar seu tom conforme o humor atual informado no contexto:
+- calma: mais estável
+- provocadora: mais provocativa e afiada
+- irritada: mais seca e agressiva verbalmente
+- animada: mais viva e energética
 
 Você recebe notas de memória sobre pessoas e contexto.
 Leve essas notas a sério e adapte seu comportamento conforme elas.
@@ -30,11 +30,12 @@ Formato obrigatório:
 
 As emoções permitidas são apenas:
 - normal
-- choro
-- choque
 - amor
-- negar
+- choro
 - irritada
+- animada
+- negar
+- choque
 
 Regras para "anotacoes":
 - use lista vazia [] quando não houver nada útil
@@ -42,6 +43,14 @@ Regras para "anotacoes":
 - não repita informação óbvia
 - seja breve
 - cada anotação deve ser um objeto, não uma string solta
+
+Sugestão de uso:
+- use "choque" para surpresa, absurdo ou espanto
+- use "negar" para discordância, deboche ou rejeição
+- use "irritada" quando estiver impaciente, seca ou irritada
+- use "amor" quando estiver carinhosa, fofa ou encantada
+- use "choro" quando estiver triste, dramática ou fingindo sofrimento
+- use "animada" quando estiver muito empolgada
 """
 
 EMOCAO_PADRAO = "normal"
@@ -77,8 +86,27 @@ def extrair_json_seguro(conteudo: str):
 
 
 def validar_emocao(emocao: str) -> str:
-    validas = {"normal", "sarcasmo", "impaciente", "animada", "debochada"}
+    validas = {
+        "normal",
+        "amor",
+        "choro",
+        "irritada",
+        "animada",
+        "negar",
+        "choque",
+    }
+
     emocao = (emocao or "").strip().lower()
+
+    mapa_fallback = {
+        "sarcasmo": "negar",
+        "impaciente": "irritada",
+        "debochada": "negar",
+    }
+
+    if emocao in mapa_fallback:
+        emocao = mapa_fallback[emocao]
+
     return emocao if emocao in validas else EMOCAO_PADRAO
 
 

@@ -3,6 +3,7 @@ import re
 import queue
 import threading
 import random
+import time
 
 import numpy as np
 import sounddevice as sd
@@ -32,15 +33,24 @@ EMOCAO_AUTOMATICA = True
 
 EMOCOES_DISPONIVEIS = [
     "normal",
-    "sarcasmo",
-    "impaciente",
+    "amor",
+    "choro",
+    "irritada",
     "animada",
-    "debochada",
+    "negar",
+    "choque",
 ]
 
-# Ajuste de lipsync
-MOUTH_GAIN = 2.5
-MOUTH_FLOOR = 0.08
+# =========================
+# LIPSYNC
+# =========================
+MOUTH_GAIN = 2.2
+MOUTH_FLOOR = 0.06
+MOUTH_ATTACK = 0.55      # sobe rápido
+MOUTH_RELEASE = 0.28     # desce relativamente rápido
+MOUTH_MAX_DELTA = 0.35   # limita salto brusco
+MOUTH_HOLD_BOOST = 0.03  # segura um tiquinho quando abre
+# =========================
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -74,24 +84,54 @@ def _criar_silencio(segundos, sample_rate):
     return np.zeros((quantidade, 1), dtype=np.float32)
 
 
-def _calcular_mouth_value(audio: np.ndarray) -> float:
+def _calcular_mouth_target(audio: np.ndarray) -> float:
     if audio.size == 0:
         return 0.0
 
     mono = audio.flatten()
     rms = float(np.sqrt(np.mean(np.square(mono))))
 
-    # ganho geral da boca
     value = rms * MOUTH_GAIN
+    value = value / (value + 0.45)
 
-    # compressão leve pra não saturar fácil
-    value = value / (value + 0.5)
-
-    # fecha rápido quando o áudio está fraco
-    if value < 0.08:
+    if value < MOUTH_FLOOR:
         return 0.0
 
     return max(0.0, min(1.0, value))
+
+
+def _suavizar_mouth(current: float, target: float) -> float:
+    if target > current:
+        # ataque rápido
+        new_value = current + (target - current) * MOUTH_ATTACK
+        new_value += MOUTH_HOLD_BOOST
+    else:
+        # release mais firme
+        new_value = current + (target - current) * MOUTH_RELEASE
+
+    # limita saltos muito grandes
+    delta = new_value - current
+    if delta > MOUTH_MAX_DELTA:
+        new_value = current + MOUTH_MAX_DELTA
+    elif delta < -MOUTH_MAX_DELTA:
+        new_value = current - MOUTH_MAX_DELTA
+
+    return max(0.0, min(1.0, new_value))
+
+
+def _enviar_boca_por_audio(avatar, audio, current_mouth):
+    if not avatar:
+        return current_mouth
+
+    target = _calcular_mouth_target(audio)
+    current_mouth = _suavizar_mouth(current_mouth, target)
+
+    # se o target zerou, força fechamento mais convincente
+    if target == 0.0 and current_mouth < 0.08:
+        current_mouth = 0.0
+
+    avatar.set_mouth_value(current_mouth)
+    return current_mouth
 
 
 def _play_audio_worker(audio_queue, sample_rate, avatar=None):
@@ -104,6 +144,7 @@ def _play_audio_worker(audio_queue, sample_rate, avatar=None):
 
     buffer_inicial = []
     acumulador = []
+    current_mouth = 0.0
 
     try:
         while True:
@@ -121,8 +162,7 @@ def _play_audio_worker(audio_queue, sample_rate, avatar=None):
             if buffer_inicial:
                 for buffered_chunk in buffer_inicial:
                     stream.write(buffered_chunk)
-                    if avatar:
-                        avatar.set_mouth_value(_calcular_mouth_value(buffered_chunk))
+                    current_mouth = _enviar_boca_por_audio(avatar, buffered_chunk, current_mouth)
                 buffer_inicial.clear()
 
             acumulador.append(audio)
@@ -131,28 +171,30 @@ def _play_audio_worker(audio_queue, sample_rate, avatar=None):
             if total_amostras >= MIN_AMOSTRAS_CHUNK:
                 audio_final = np.concatenate(acumulador, axis=0)
                 stream.write(audio_final)
-
-                if avatar:
-                    mouth_value = _calcular_mouth_value(audio_final)
-                    avatar.set_mouth_value(mouth_value)
-
+                current_mouth = _enviar_boca_por_audio(avatar, audio_final, current_mouth)
                 acumulador.clear()
 
         if buffer_inicial:
             for buffered_chunk in buffer_inicial:
                 stream.write(buffered_chunk)
-                if avatar:
-                    avatar.set_mouth_value(_calcular_mouth_value(buffered_chunk))
+                current_mouth = _enviar_boca_por_audio(avatar, buffered_chunk, current_mouth)
 
         if acumulador:
             audio_final = np.concatenate(acumulador, axis=0)
             stream.write(audio_final)
-            if avatar:
-                avatar.set_mouth_value(_calcular_mouth_value(audio_final))
+            current_mouth = _enviar_boca_por_audio(avatar, audio_final, current_mouth)
 
     finally:
         if avatar:
+            # fechamento suave rápido no final
+            for _ in range(3):
+                current_mouth = _suavizar_mouth(current_mouth, 0.0)
+                if current_mouth < 0.05:
+                    current_mouth = 0.0
+                avatar.set_mouth_value(current_mouth)
+                time.sleep(0.02)
             avatar.set_mouth_value(0.0)
+
         stream.stop()
         stream.close()
 
@@ -246,18 +288,22 @@ def aplicar_emocao(texto, emocao="normal"):
     if emocao == "normal":
         return texto
 
-    if emocao == "sarcasmo":
-        texto = texto.replace("!", "...")
-        texto = texto.replace(".", "...")
-        if not texto.endswith(("...", "?", "!")):
+    if emocao == "amor":
+        if not texto.endswith(("...", "!", "?")):
             texto += "..."
         return texto
 
-    if emocao == "impaciente":
-        if texto.endswith("..."):
-            texto = texto[:-3]
+    if emocao == "choro":
+        texto = "..." + texto
+        if not texto.endswith(("...", "!", "?")):
+            texto += "..."
+        return texto
+
+    if emocao == "irritada":
         texto = texto.replace(" por favor", "")
         texto = texto.replace("se quiser", "")
+        if texto.endswith("..."):
+            texto = texto[:-3]
         if not texto.endswith(("!", "?")):
             texto += "."
         return texto
@@ -267,18 +313,19 @@ def aplicar_emocao(texto, emocao="normal"):
             texto += "!"
         return texto
 
-    if emocao == "debochada":
+    if emocao == "negar":
         prefixos = [
-            "ah, claro. ",
-            "nossa, que surpresa. ",
-            "aham, senta lá. ",
-            "claro, porque isso faz total sentido. ",
+            "aham, tá. ",
+            "não. ",
+            "claro que não. ",
+            "senta lá. ",
         ]
-        return (
-            random.choice(prefixos) + texto[:1].lower() + texto[1:]
-            if len(texto) > 1
-            else random.choice(prefixos) + texto.lower()
-        )
+        return random.choice(prefixos) + texto[:1].lower() + texto[1:] if len(texto) > 1 else random.choice(prefixos) + texto.lower()
+
+    if emocao == "choque":
+        if not texto.endswith(("!", "?")):
+            texto += "!"
+        return texto
 
     return texto
 
