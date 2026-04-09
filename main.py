@@ -1,87 +1,250 @@
-from ai import gerar_resposta, gerar_assunto
+import asyncio
+import threading
+import time
+from contextlib import suppress
+
+from ai import gerar_assunto, gerar_resposta
+from avatar import AvatarController
+from hear import ouvir, ouvir_live_ate_texto
 from memory import (
+    apagar_nota,
+    editar_nota,
+    limpar_historico,
+    limpar_notas,
+    listar_notas,
     salvar_historico,
     salvar_nota,
-    editar_nota,
-    listar_notas,
-    apagar_nota,
-    limpar_notas,
-    limpar_historico,
 )
-from hear import ouvir, ouvir_live_ate_texto
-from tts import falar
 from mood import ajustar_humor, carregar_humor, resetar_humor
-from avatar import AvatarController
+from tts import falar
+from twitch_bot import TWITCH_TRIGGER_MODE, TwitchChatBridge
 
-import time
 
-print("IA iniciada 😈")
-print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /testeanim")
-
+TEMPO_SILENCIO = 25
+process_lock = threading.Lock()
 modo_mic_live = False
 ultimo_input = time.time()
-TEMPO_SILENCIO = 25
 
-avatar = None
 
-try:
-    avatar = AvatarController()
-    avatar.connect()
-    avatar.iniciar_idle()
-    avatar.iniciar_piscada()
-except Exception as e:
-    print(f"⚠️ Avatar não conectado: {e}")
-    avatar = None
+def inicializar_avatar():
+    try:
+        avatar = AvatarController()
+        avatar.connect()
+        avatar.iniciar_idle()
+        avatar.iniciar_piscada()
+        return avatar
+    except Exception as e:
+        print(f"Aviso: avatar nao conectado: {e}")
+        return None
+
+
+avatar = inicializar_avatar()
 
 
 def mostrar_prompt():
-    print("\nVocê >", end=" ", flush=True)
+    print("\nVoce >", end=" ", flush=True)
+
+
+def salvar_anotacoes(anotacoes):
+    if not anotacoes:
+        return
+
+    for anotacao in anotacoes:
+        salvar_nota(
+            anotacao["alvo"],
+            anotacao["nota"],
+            anotacao.get("instrucao", ""),
+            anotacao.get("categoria", "perfil"),
+        )
+
+    print(f"[MEMORIA] {len(anotacoes)} anotacao(oes) salva(s).")
+
+
+def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = "voce", enviar_chat=None):
+    entrada = entrada.strip()
+    if not entrada:
+        return None
+
+    with process_lock:
+        humor = ajustar_humor(entrada)
+        print(
+            f"(humor: {humor['estado']} | {humor['paciencia']}/10 | "
+            f"delta: {humor['delta']} | motivo: {humor['motivo']})"
+        )
+
+        prompt_ia = entrada
+        historico_usuario = entrada
+
+        if origem == "twitch":
+            prompt_ia = f'Mensagem no chat da Twitch de "{autor}": {entrada}'
+            historico_usuario = f"{autor}: {entrada}"
+            print(f"\n[TWITCH] {autor} > {entrada}")
+
+        if avatar:
+            avatar.pensando_on()
+
+        try:
+            resposta = gerar_resposta(prompt_ia)
+        finally:
+            if avatar:
+                avatar.pensando_off()
+
+        texto = resposta["texto"]
+        emocao = resposta["emocao"]
+        anotacoes = resposta.get("anotacoes", [])
+
+        if avatar:
+            avatar.aplicar_expressao_completa(humor["estado"], emocao)
+
+        if origem == "twitch":
+            print(f"[IA->TWITCH] {texto} ({emocao})")
+        else:
+            print(f"\nIA > {texto} ({emocao})\n")
+
+        salvar_historico("usuario", historico_usuario)
+        salvar_historico("ia", texto, emocao)
+        salvar_anotacoes(anotacoes)
+
+        if enviar_chat:
+            try:
+                enviar_chat(texto)
+            except Exception as e:
+                print(f"[TWITCH] Falha ao enfileirar resposta no chat: {e}")
+
+        falar(
+            texto,
+            emocao=emocao,
+            avatar=avatar,
+        )
+
+        return {
+            "texto": texto,
+            "emocao": emocao,
+            "humor": humor,
+        }
+
+
+def puxar_assunto_sozinha():
+    global ultimo_input
+
+    with process_lock:
+        print("\n[IA] Puxando assunto...")
+
+        if avatar:
+            avatar.pensando_on()
+
+        try:
+            resposta = gerar_assunto()
+        finally:
+            if avatar:
+                avatar.pensando_off()
+
+        texto = resposta["texto"]
+        emocao = resposta["emocao"]
+        humor_atual = carregar_humor()
+
+        if avatar:
+            avatar.aplicar_expressao_completa(humor_atual["estado"], emocao)
+
+        print(f"\nIA > {texto} ({emocao})\n")
+
+        falar(
+            texto,
+            emocao=emocao,
+            avatar=avatar,
+        )
+
+        salvar_historico("ia", texto, emocao)
+        ultimo_input = time.time()
+
+
+def iniciar_twitch_em_background():
+    def runner():
+        async def processar_chat(incoming_queue: asyncio.Queue, outgoing_queue: asyncio.Queue):
+            loop = asyncio.get_running_loop()
+
+            def enviar_chat_threadsafe(texto: str):
+                future = asyncio.run_coroutine_threadsafe(
+                    outgoing_queue.put({"text": texto}),
+                    loop,
+                )
+                future.result()
+
+            while True:
+                msg = await incoming_queue.get()
+                try:
+                    user = str(msg.get("user", "desconhecido")).strip() or "desconhecido"
+                    text = str(msg.get("text", "")).strip()
+
+                    if not text:
+                        continue
+
+                    await asyncio.to_thread(
+                        responder_personagem,
+                        text,
+                        origem="twitch",
+                        autor=user,
+                        enviar_chat=enviar_chat_threadsafe,
+                    )
+                except Exception as e:
+                    print(f"[TWITCH] Erro processando mensagem: {e}")
+                finally:
+                    incoming_queue.task_done()
+
+        async def bot_runner():
+            incoming_queue = asyncio.Queue()
+            outgoing_queue = asyncio.Queue()
+            bot = TwitchChatBridge(incoming_queue, outgoing_queue)
+
+            consumer_task = asyncio.create_task(processar_chat(incoming_queue, outgoing_queue))
+            start_options = {
+                "load_tokens": False,
+                "with_adapter": False,
+            }
+
+            bot_task = asyncio.create_task(bot.start(**start_options))
+
+            try:
+                await asyncio.gather(bot_task, consumer_task)
+            finally:
+                consumer_task.cancel()
+                await bot.close()
+                await asyncio.gather(consumer_task, return_exceptions=True)
+
+        try:
+            asyncio.run(bot_runner())
+        except Exception as e:
+            print(f"[TWITCH] Integracao encerrada com erro: {e}")
+
+    thread = threading.Thread(target=runner, daemon=True, name="twitch-chat-thread")
+    thread.start()
+    return thread
+
+
+def encerrar_avatar():
+    if not avatar:
+        return
+
+    with suppress(Exception):
+        avatar.parar_idle()
+    with suppress(Exception):
+        avatar.parar_piscada()
+
+
+print("IA iniciada")
+print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /testeanim | /sair")
+
+twitch_thread = iniciar_twitch_em_background()
+print("[TWITCH] Integracao com chat iniciada em background.")
 
 
 while True:
     try:
-        # =========================
-        # QUEBRA DE SILÊNCIO
-        # =========================
         if not modo_mic_live:
             agora = time.time()
-
             if agora - ultimo_input > TEMPO_SILENCIO:
-                print("\n💭 IA puxando assunto...")
+                puxar_assunto_sozinha()
 
-                if avatar:
-                    avatar.pensando_on()
-
-                resposta = gerar_assunto()
-
-                if avatar:
-                    avatar.pensando_off()
-
-                texto = resposta["texto"]
-                emocao = resposta["emocao"]
-
-                humor_atual = carregar_humor()
-
-                if avatar:
-                    avatar.aplicar_expressao_completa(
-                        humor_atual["estado"],
-                        emocao
-                    )
-
-                print(f"\nIA > {texto} ({emocao})\n")
-
-                falar(
-                    texto,
-                    emocao=emocao,
-                    avatar=avatar,
-                )
-
-                salvar_historico("ia", texto, emocao)
-                ultimo_input = time.time()
-
-        # =========================
-        # MODO MIC-LIVE
-        # =========================
         if modo_mic_live:
             if avatar:
                 avatar.escutando_on()
@@ -96,12 +259,8 @@ while True:
 
             if "ativar modo texto" in entrada.lower():
                 modo_mic_live = False
-                print("⌨️ Voltando pro modo texto")
+                print("Voltando pro modo texto")
                 continue
-
-        # =========================
-        # MODO TEXTO
-        # =========================
         else:
             mostrar_prompt()
             entrada = input().strip()
@@ -129,56 +288,38 @@ while True:
 
             if entrada == "/mic-live":
                 modo_mic_live = True
-                print("👂 Escuta contínua ativada")
+                print("Escuta continua ativada")
                 continue
 
-            # =========================
-            # TESTE DE ANIMAÇÃO
-            # =========================
             if entrada == "/testeanim":
                 if avatar:
-                    print("🎭 Testando animações...")
+                    print("Testando animacoes...")
                     avatar.resetar_estado_visual()
 
                     avatar.trigger_hotkey("exp_irritada")
                     time.sleep(1)
-
                     avatar.trigger_hotkey("emo_choque")
                     time.sleep(1)
-
                     avatar.trigger_hotkey("exp_animada")
                     time.sleep(1)
-
                     avatar.trigger_hotkey("emo_amor")
                     time.sleep(1)
-
                     avatar.set_idle_values(eye_x=0.8, eye_y=0.0, head_x=0.2, head_y=0.1)
                     time.sleep(1)
-
                     avatar.set_idle_values(eye_x=-0.8, eye_y=0.0, head_x=-0.2, head_y=0.0)
                     time.sleep(1)
-
                     avatar.set_idle_values(eye_x=0.0, eye_y=0.6, head_x=0.0, head_y=0.1)
                     time.sleep(1)
-
                     avatar.set_idle_values(eye_x=0.0, eye_y=-0.6, head_x=0.0, head_y=-0.1)
                     time.sleep(1)
-
                     avatar.piscar()
                     time.sleep(1)
-
                     avatar.set_idle_values(eye_x=0.0, eye_y=0.0, head_x=0.0, head_y=0.0)
                     avatar.set_blink_values(0.0, 0.0)
-                    avatar.trigger_hotkey("boca_falando_on")
-                    time.sleep(1)
-                    avatar.trigger_hotkey("boca_falando_off")
                 else:
-                    print("Avatar não conectado")
+                    print("Avatar nao conectado")
                 continue
 
-            # =========================
-            # HUMOR
-            # =========================
             if entrada == "/verhumor":
                 h = carregar_humor()
                 print(f"Humor: {h['estado']} ({h['paciencia']}/10)")
@@ -189,17 +330,13 @@ while True:
                 print("Humor resetado")
                 continue
 
-            # =========================
-            # MEMÓRIA
-            # =========================
             if entrada.startswith("/anotar "):
                 partes = [p.strip() for p in entrada[8:].split("|")]
-
                 salvar_nota(
                     partes[0],
                     partes[1] if len(partes) > 1 else "",
                     partes[2] if len(partes) > 2 else "",
-                    partes[3] if len(partes) > 3 else "perfil"
+                    partes[3] if len(partes) > 3 else "perfil",
                 )
                 print("Nota salva")
                 continue
@@ -212,11 +349,11 @@ while True:
                     continue
 
                 print("\n=== NOTAS ===")
-                for i, n in enumerate(notas):
-                    print(f"[{i}] {n['alvo']} | {n['categoria']}")
-                    print(f"     nota: {n['nota']}")
-                    if n.get("instrucao"):
-                        print(f"     instrucao: {n['instrucao']}")
+                for i, nota in enumerate(notas):
+                    print(f"[{i}] {nota['alvo']} | {nota['categoria']}")
+                    print(f"     nota: {nota['nota']}")
+                    if nota.get("instrucao"):
+                        print(f"     instrucao: {nota['instrucao']}")
                 print("=============\n")
                 continue
 
@@ -233,21 +370,15 @@ while True:
                         categoria=partes[4] if len(partes) > 4 else None,
                     )
 
-                    if ok:
-                        print("✏️ Nota editada")
-                    else:
-                        print("Índice inválido")
+                    print("Nota editada" if ok else "Indice invalido")
                 except Exception:
                     print("Erro ao editar nota")
                 continue
 
             if entrada.startswith("/apagarnota "):
                 try:
-                    i = int(entrada[12:])
-                    if apagar_nota(i):
-                        print("Nota apagada")
-                    else:
-                        print("Índice inválido")
+                    indice = int(entrada[12:])
+                    print("Nota apagada" if apagar_nota(indice) else "Indice invalido")
                 except Exception:
                     print("Erro ao apagar nota")
                 continue
@@ -259,72 +390,18 @@ while True:
 
             if entrada == "/limparhistorico":
                 limpar_historico()
-                print("Histórico apagado")
+                print("Historico apagado")
                 continue
 
-        # =========================
-        # HUMOR DINÂMICO
-        # =========================
-        humor = ajustar_humor(entrada)
-        print(
-            f"(humor: {humor['estado']} | {humor['paciencia']}/10 | "
-            f"delta: {humor['delta']} | motivo: {humor['motivo']})"
-        )
-
-        # =========================
-        # RESPOSTA DA IA
-        # =========================
-        if avatar:
-            avatar.pensando_on()
-
-        resposta = gerar_resposta(entrada)
-
-        if avatar:
-            avatar.pensando_off()
-
-        texto = resposta["texto"]
-        emocao = resposta["emocao"]
-        anotacoes = resposta.get("anotacoes", [])
-
-        if avatar:
-            avatar.aplicar_expressao_completa(
-                humor["estado"],
-                emocao
-            )
-
-        print(f"\nIA > {texto} ({emocao})\n")
-
-        falar(
-            texto,
-            emocao=emocao,
-            avatar=avatar,
-        )
-
-        # =========================
-        # MEMÓRIA
-        # =========================
-        salvar_historico("usuario", entrada)
-        salvar_historico("ia", texto, emocao)
-
-        if anotacoes:
-            for a in anotacoes:
-                salvar_nota(
-                    a["alvo"],
-                    a["nota"],
-                    a.get("instrucao", ""),
-                    a.get("categoria", "perfil")
-                )
-            print(f"🧠 {len(anotacoes)} anotação(ões) salva(s).")
+        ultimo_input = time.time()
+        responder_personagem(entrada, origem="usuario", autor="voce")
 
     except KeyboardInterrupt:
         print("\nEncerrando...")
-        if avatar:
-            try:
-                avatar.parar_idle()
-                avatar.parar_piscada()
-            except Exception:
-                pass
+        encerrar_avatar()
         break
-
     except Exception as e:
         print("Erro:", e)
+
+
+encerrar_avatar()
