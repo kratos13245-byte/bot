@@ -1,10 +1,24 @@
 import json
+import os
 import requests
 
 from memory import montar_contexto_memoria
 from mood import obter_contexto_humor
 
-URL_API = "http://localhost:8080/v1/chat/completions"
+def _resolver_url_api() -> str:
+    raw = os.getenv("AI_API_URL", "http://localhost:8080/v1/chat/completions").strip()
+    if not raw:
+        return "http://localhost:8080/v1/chat/completions"
+
+    raw = raw.rstrip("/")
+
+    if raw.endswith("/v1/chat/completions"):
+        return raw
+
+    if raw.endswith("/v1"):
+        return raw + "/chat/completions"
+
+    return raw + "/v1/chat/completions"
 
 PERSONALIDADE = """
 Você é uma IA VTuber em português do Brasil.
@@ -164,7 +178,7 @@ def gerar_resposta(prompt_usuario: str) -> dict:
         "repeat_penalty": 1.12
     }
 
-    resposta = requests.post(URL_API, json=payload, timeout=120)
+    resposta = requests.post(_resolver_url_api(), json=payload, timeout=120)
     resposta.raise_for_status()
 
     dados = resposta.json()
@@ -230,7 +244,7 @@ Formato:
         "max_tokens": 120
     }
 
-    resposta = requests.post(URL_API, json=payload, timeout=120)
+    resposta = requests.post(_resolver_url_api(), json=payload, timeout=120)
     resposta.raise_for_status()
 
     dados = resposta.json()
