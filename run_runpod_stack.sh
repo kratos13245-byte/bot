@@ -18,8 +18,11 @@ export TTS_API_HOST TTS_API_PORT
 export XTTS_MODEL_DIR="${XTTS_MODEL_DIR:-/workspace/models/xtts/tts_models--multilingual--multi-dataset--xtts_v2}"
 
 if [ -f "$ROOT_DIR/.venv/bin/activate" ]; then
+  echo "[RUNPOD STACK] Ativando venv: $ROOT_DIR/.venv"
   # shellcheck disable=SC1091
   source "$ROOT_DIR/.venv/bin/activate"
+else
+  echo "[RUNPOD STACK] Aviso: .venv nao encontrada em $ROOT_DIR/.venv"
 fi
 
 if [ ! -x "$LLAMA_BIN" ]; then
