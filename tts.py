@@ -1,4 +1,5 @@
 import io
+import numbers
 import os
 import random
 import re
@@ -67,8 +68,19 @@ def _patch_torch_isin_kwarg(torch_module):
         pass
 
     def _isin_compat(*args, **kwargs):
+        elements = kwargs.get("elements", args[0] if args else None)
+
+        # transformers may call with keyword test_elements in versions where torch expects test_element
         if "test_elements" in kwargs and "test_element" not in kwargs:
             kwargs["test_element"] = kwargs.pop("test_elements")
+
+        test_element = kwargs.get("test_element", None)
+
+        # Some torch versions do not accept Number/Number, but do accept Number/Tensor.
+        if isinstance(elements, numbers.Number) and isinstance(test_element, numbers.Number):
+            kwargs.pop("test_element", None)
+            kwargs["test_elements"] = torch_module.tensor([test_element])
+
         return original_isin(*args, **kwargs)
 
     torch_module.isin = _isin_compat
