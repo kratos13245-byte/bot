@@ -69,6 +69,7 @@ def _patch_torch_isin_kwarg(torch_module):
 
     def _isin_compat(*args, **kwargs):
         elements = kwargs.get("elements", args[0] if args else None)
+        has_elements_kw = "elements" in kwargs
 
         # transformers may call with keyword test_elements in versions where torch expects test_element
         if "test_elements" in kwargs and "test_element" not in kwargs:
@@ -80,6 +81,11 @@ def _patch_torch_isin_kwarg(torch_module):
         if isinstance(elements, numbers.Number) and isinstance(test_element, numbers.Number):
             kwargs.pop("test_element", None)
             kwargs["test_elements"] = torch_module.tensor([test_element])
+            test_element = kwargs["test_elements"]
+
+        # Some torch versions require `element` (singular) when left side is scalar.
+        if isinstance(elements, numbers.Number) and isinstance(test_element, torch_module.Tensor) and has_elements_kw:
+            kwargs["element"] = kwargs.pop("elements")
 
         return original_isin(*args, **kwargs)
 
