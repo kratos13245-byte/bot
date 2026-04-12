@@ -1,6 +1,8 @@
 aiohttp
 numpy
 requests
+mss
+Pillow
 torch==2.5.1
 torchaudio==2.5.1
 TTS==0.22.0

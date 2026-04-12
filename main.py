@@ -39,6 +39,7 @@ from memory import (
 from mood import ajustar_humor, carregar_humor, resetar_humor
 from tts import falar
 from twitch_bot import TWITCH_TRIGGER_MODE, TwitchChatBridge
+from vision_local import VisionWatcher
 
 
 TEMPO_SILENCIO = 25
@@ -60,6 +61,7 @@ def inicializar_avatar():
 
 
 avatar = inicializar_avatar()
+vision = VisionWatcher()
 
 
 def mostrar_prompt():
@@ -243,6 +245,9 @@ def iniciar_twitch_em_background():
 
 
 def encerrar_avatar():
+    with suppress(Exception):
+        vision.stop()
+
     if not avatar:
         return
 
@@ -253,10 +258,14 @@ def encerrar_avatar():
 
 
 print("IA iniciada")
-print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /testeanim | /sair")
+print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao off | /visao status | /visao agora | /testeanim | /sair")
 
 twitch_thread = iniciar_twitch_em_background()
 print("[TWITCH] Integracao com chat iniciada em background.")
+
+if os.getenv("VISION_AUTO_START", "0") == "1":
+    if vision.start():
+        print("[VISAO] Captura visual iniciada automaticamente.")
 
 
 while True:
@@ -339,6 +348,39 @@ while True:
                     avatar.set_blink_values(0.0, 0.0)
                 else:
                     print("Avatar nao conectado")
+                continue
+
+            if entrada == "/visao on":
+                if vision.start():
+                    print("[VISAO] Captura visual ativada.")
+                else:
+                    print("[VISAO] Ja estava ativa.")
+                continue
+
+            if entrada == "/visao off":
+                if vision.stop():
+                    print("[VISAO] Captura visual desativada.")
+                else:
+                    print("[VISAO] Ja estava desativada.")
+                continue
+
+            if entrada == "/visao status":
+                s = vision.status()
+                print(f"[VISAO] ativa={s['enabled']} | intervalo={s['intervalo']}s")
+                if s["ultimo_erro"]:
+                    print(f"[VISAO] ultimo erro: {s['ultimo_erro']}")
+                if s["resumo"]:
+                    print(f"[VISAO] ultimo resumo: {s['resumo']}")
+                else:
+                    print("[VISAO] sem resumo ainda.")
+                continue
+
+            if entrada == "/visao agora":
+                try:
+                    resumo = vision.force_once()
+                    print(f"[VISAO] resumo atualizado: {resumo}")
+                except Exception as e:
+                    print(f"[VISAO] falha ao capturar agora: {e}")
                 continue
 
             if entrada == "/verhumor":
