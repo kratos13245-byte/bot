@@ -57,6 +57,11 @@ Regras para "anotacoes":
 - nao repita informacao obvia
 - seja breve
 - cada anotacao deve ser um objeto, nao uma string
+
+Regra de contexto visual:
+- quando houver "Contexto visual atual da tela", trate isso como observacao atual do ambiente
+- se o usuario perguntar sobre tela/janela/interface/jogo, priorize esse contexto visual na resposta
+- se o contexto visual estiver vazio, diga que nao conseguiu ver a tela nesse momento
 """
 
 EMOCAO_PADRAO = "normal"
@@ -130,6 +135,10 @@ def _montar_mensagens_base(prompt_usuario: str):
         mensagens.append(
             {"role": "system", "content": f"Contexto visual atual da tela:\n{contexto_visao['resumo']}"}
         )
+        if os.getenv("VISION_DEBUG", "0") == "1":
+            print(f"[VISAO->IA] {contexto_visao['resumo']}")
+    elif os.getenv("VISION_DEBUG", "0") == "1":
+        print("[VISAO->IA] (sem contexto visual)")
 
     mensagens.append({"role": "user", "content": prompt_usuario})
     return mensagens
