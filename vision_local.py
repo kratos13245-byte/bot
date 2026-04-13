@@ -10,7 +10,9 @@ from contexto_visao import atualizar_contexto_visao, obter_contexto_visao
 
 
 def _resolver_url_vision() -> str:
-    raw = os.getenv("VISION_API_URL", os.getenv("AI_API_URL", "")).strip()
+    raw = os.getenv("VISION_API_URL", "").strip()
+    if not raw and os.getenv("VISION_USE_AI_FALLBACK", "0") == "1":
+        raw = os.getenv("AI_API_URL", "").strip()
     if not raw:
         return ""
 
@@ -48,7 +50,10 @@ def _capturar_jpeg_base64():
 def _gerar_resumo_visual():
     url = _resolver_url_vision()
     if not url:
-        raise RuntimeError("VISION_API_URL/AI_API_URL nao configurada.")
+        raise RuntimeError(
+            "VISION_API_URL nao configurada. "
+            "Defina um endpoint multimodal dedicado para visao."
+        )
 
     modelo = os.getenv("VISION_MODEL", "local-model").strip() or "local-model"
     prompt = os.getenv(
@@ -75,6 +80,12 @@ def _gerar_resumo_visual():
     }
 
     r = requests.post(url, json=payload, timeout=120)
+    if r.status_code >= 400:
+        detalhe = r.text
+        if "image input is not supported" in detalhe.lower():
+            raise RuntimeError(
+                "Endpoint de visao nao suporta imagem (faltando modelo multimodal/mmproj)."
+            )
     r.raise_for_status()
     data = r.json()
     return str(data["choices"][0]["message"]["content"]).strip()
