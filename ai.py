@@ -118,6 +118,23 @@ def validar_anotacoes(anotacoes):
     return limpas
 
 
+def _log_prompt_debug(mensagens, *, tag="resposta"):
+    if os.getenv("AI_DEBUG_PROMPT", "0") != "1":
+        return
+
+    print(f"[AI DEBUG] ===== prompt ({tag}) =====")
+    for i, msg in enumerate(mensagens):
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = json.dumps(content, ensure_ascii=False)
+        texto = str(content).replace("\n", " ").strip()
+        if len(texto) > 900:
+            texto = texto[:900] + "...(truncado)"
+        print(f"[AI DEBUG] {i:02d} {role}: {texto}")
+    print("[AI DEBUG] =========================")
+
+
 def _montar_mensagens_base(prompt_usuario: str):
     contexto_memoria = montar_contexto_memoria(prompt_usuario)
     contexto_humor = obter_contexto_humor()
@@ -145,9 +162,12 @@ def _montar_mensagens_base(prompt_usuario: str):
 
 
 def gerar_resposta(prompt_usuario: str) -> dict:
+    mensagens = _montar_mensagens_base(prompt_usuario)
+    _log_prompt_debug(mensagens, tag="gerar_resposta")
+
     payload = {
         "model": os.getenv("AI_MODEL", "local-model"),
-        "messages": _montar_mensagens_base(prompt_usuario),
+        "messages": mensagens,
         "temperature": 0.85,
         "top_p": 0.95,
         "max_tokens": 320,
@@ -201,6 +221,8 @@ Formato:
 """,
         }
     )
+
+    _log_prompt_debug(mensagens, tag="gerar_assunto")
 
     payload = {
         "model": os.getenv("AI_MODEL", "local-model"),
