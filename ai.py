@@ -157,6 +157,13 @@ def _montar_mensagens_base(prompt_usuario: str):
     elif os.getenv("VISION_DEBUG", "0") == "1":
         print("[VISAO->IA] (sem contexto visual)")
 
+    if contexto_visao["resumo"] and os.getenv("VISION_APPEND_TO_USER", "1") == "1":
+        prompt_usuario = (
+            f"{prompt_usuario}\n\n"
+            f"[Contexto visual atual da tela para considerar na resposta]\n"
+            f"{contexto_visao['resumo']}"
+        )
+
     mensagens.append({"role": "user", "content": prompt_usuario})
     return mensagens
 
