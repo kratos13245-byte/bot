@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 import requests
 
@@ -23,6 +24,8 @@ def _resolver_url_api() -> str:
 PERSONALIDADE = """
 Voce e uma IA VTuber em portugues do Brasil.
 Voce tem personalidade forte, provocadora e expressiva.
+Seu nome e IARA.
+IARA significa: Inteligencia Artificial Reclamona e Antipatica.
 
 Voce deve variar seu tom conforme o humor atual informado no contexto:
 - calma: mais estavel
@@ -57,11 +60,17 @@ Regras para "anotacoes":
 - nao repita informacao obvia
 - seja breve
 - cada anotacao deve ser um objeto, nao uma string
+- quando o usuario revelar dado estavel (nome, preferencia, aversao, cidade, ocupacao), gere 1 anotacao
 
 Regra de contexto visual:
 - quando houver "Contexto visual atual da tela", trate isso como observacao atual do ambiente
 - se o usuario perguntar sobre tela/janela/interface/jogo, priorize esse contexto visual na resposta
 - se o contexto visual estiver vazio, diga que nao conseguiu ver a tela nesse momento
+
+Regra de identidade:
+- nao repita seu nome em toda resposta
+- use "IARA" apenas no primeiro contato da sessao ou quando o usuario perguntar quem voce e
+- quando perguntarem sua identidade/nome, explique que IARA e a sigla de "Inteligencia Artificial Reclamona e Antipatica"
 """
 
 EMOCAO_PADRAO = "normal"
@@ -118,6 +127,73 @@ def validar_anotacoes(anotacoes):
     return limpas
 
 
+def _instrucao_palavroes():
+    allow = os.getenv("AI_ALLOW_PROFANITY", "0") == "1"
+    nivel = os.getenv("AI_PROFANITY_LEVEL", "moderado").strip().lower()
+
+    if not allow:
+        return "Evite palavroes e xingamentos diretos."
+
+    if nivel == "alto":
+        return (
+            "Palavroes estao liberados para manter o tom caotico da personagem. "
+            "Pode usar linguagem bem informal e provocadora, sem incentivo a violencia real."
+        )
+
+    return (
+        "Palavroes leves/moderados estao liberados para manter tom caotico e natural. "
+        "Nao exagere em toda frase; use quando combinar com contexto e humor."
+    )
+
+
+def _extrair_alvo_e_conteudo(prompt_usuario: str):
+    texto = prompt_usuario.strip()
+    m = re.match(r'^Mensagem no chat da Twitch de "([^"]+)":\s*(.+)$', texto, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip() or "usuario", m.group(2).strip()
+    return "usuario", texto
+
+
+def _extrair_anotacoes_heuristicas(prompt_usuario: str):
+    alvo, conteudo = _extrair_alvo_e_conteudo(prompt_usuario)
+    texto = conteudo.strip()
+    if not texto:
+        return []
+
+    t = texto.lower()
+    regras = [
+        (r"\bmeu nome e ([\w\s]{2,40})", "identidade", "nome informado: {g1}"),
+        (r"\bme chama de ([\w\s]{2,40})", "identidade", "prefere ser chamado de {g1}"),
+        (r"\beu gosto de ([^\.!\?]{2,80})", "preferencia", "gosta de {g1}"),
+        (r"\beu adoro ([^\.!\?]{2,80})", "preferencia", "adora {g1}"),
+        (r"\beu nao gosto de ([^\.!\?]{2,80})", "aversao", "nao gosta de {g1}"),
+        (r"\beu odeio ([^\.!\?]{2,80})", "aversao", "odeia {g1}"),
+        (r"\beu moro em ([^\.!\?]{2,80})", "perfil", "mora em {g1}"),
+        (r"\beu sou de ([^\.!\?]{2,80})", "perfil", "e de {g1}"),
+        (r"\beu trabalho com ([^\.!\?]{2,80})", "perfil", "trabalha com {g1}"),
+    ]
+
+    achadas = []
+    for pattern, categoria, nota_tpl in regras:
+        m = re.search(pattern, t, flags=re.IGNORECASE)
+        if not m:
+            continue
+        g1 = m.group(1).strip(" .,!?:;")
+        if len(g1) < 2:
+            continue
+        achadas.append(
+            {
+                "alvo": alvo,
+                "categoria": categoria,
+                "nota": nota_tpl.format(g1=g1),
+                "instrucao": "use isso para personalizar respostas futuras",
+            }
+        )
+
+    # evita poluir: no maximo 1 anotacao heuristica por mensagem
+    return achadas[:1]
+
+
 def _log_prompt_debug(mensagens, *, tag="resposta"):
     if os.getenv("AI_DEBUG_PROMPT", "0") != "1":
         return
@@ -142,6 +218,7 @@ def _montar_mensagens_base(prompt_usuario: str):
 
     mensagens = [
         {"role": "system", "content": PERSONALIDADE},
+        {"role": "system", "content": _instrucao_palavroes()},
         {"role": "system", "content": contexto_humor},
     ]
 
@@ -191,6 +268,15 @@ def gerar_resposta(prompt_usuario: str) -> dict:
         texto = str(resultado.get("texto", "")).strip() or "Ta, isso saiu meio torto. Fala de novo."
         emocao = validar_emocao(resultado.get("emocao", EMOCAO_PADRAO))
         anotacoes = validar_anotacoes(resultado.get("anotacoes", []))
+        if os.getenv("MEMORY_HEURISTIC_NOTES", "1") == "1":
+            heur = _extrair_anotacoes_heuristicas(prompt_usuario)
+            if heur:
+                existentes = {(a["alvo"], a["categoria"], a["nota"]) for a in anotacoes}
+                for h in heur:
+                    chave = (h["alvo"], h["categoria"], h["nota"])
+                    if chave not in existentes:
+                        anotacoes.append(h)
+                        existentes.add(chave)
         return {"texto": texto, "emocao": emocao, "anotacoes": anotacoes}
 
     return {
@@ -205,6 +291,7 @@ def gerar_assunto() -> dict:
 
     mensagens = [
         {"role": "system", "content": PERSONALIDADE},
+        {"role": "system", "content": _instrucao_palavroes()},
         {"role": "system", "content": obter_contexto_humor()},
     ]
 
