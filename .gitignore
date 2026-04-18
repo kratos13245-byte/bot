@@ -18,3 +18,5 @@ emoçoes.txt
 twitch_rewards_test.py
 __pycache__/twitch_test_main.cpython-313.pyc
 __pycache__/twitch_chat_main.cpython-313.pyc
+mineflayer_bot/node_modules/
+mineflayer_bot/.env

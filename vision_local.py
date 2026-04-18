@@ -6,7 +6,12 @@ import time
 
 import requests
 
-from contexto_visao import atualizar_contexto_visao, obter_contexto_visao
+from contexto_visao import (
+    atualizar_contexto_visao,
+    definir_visao_ativa,
+    limpar_contexto_visao,
+    obter_contexto_visao,
+)
 
 
 def _resolver_url_vision() -> str:
@@ -118,6 +123,7 @@ class VisionWatcher:
         if self._enabled:
             return False
         self._enabled = True
+        definir_visao_ativa(True)
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="vision-watcher")
         self._thread.start()
@@ -127,10 +133,13 @@ class VisionWatcher:
         if not self._enabled:
             return False
         self._enabled = False
+        definir_visao_ativa(False)
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
         self._thread = None
+        if os.getenv("VISION_CLEAR_ON_STOP", "1") == "1":
+            limpar_contexto_visao()
         return True
 
     def force_once(self):

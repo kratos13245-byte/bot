@@ -62,12 +62,29 @@ def salvar_historico(tipo: str, conteudo: str, emocao: Optional[str] = None) -> 
 
 def salvar_nota(alvo: str, nota: str, instrucao: str = "", categoria: str = "perfil") -> None:
     memoria = carregar_memoria()
+    alvo = alvo.strip()
+    categoria = categoria.strip()
+    nota = nota.strip()
+    instrucao = instrucao.strip()
+
+    if not alvo or not nota:
+        return
+
+    chave_nova = (alvo.lower(), categoria.lower(), nota.lower())
+    for n in memoria["notas"]:
+        chave_existente = (
+            str(n.get("alvo", "")).strip().lower(),
+            str(n.get("categoria", "")).strip().lower(),
+            str(n.get("nota", "")).strip().lower(),
+        )
+        if chave_existente == chave_nova:
+            return
 
     memoria["notas"].append({
-        "alvo": alvo.strip(),
-        "categoria": categoria.strip(),
-        "nota": nota.strip(),
-        "instrucao": instrucao.strip()
+        "alvo": alvo,
+        "categoria": categoria,
+        "nota": nota,
+        "instrucao": instrucao
     })
 
     memoria["notas"] = memoria["notas"][-MAX_NOTAS:]

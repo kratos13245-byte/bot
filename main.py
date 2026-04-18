@@ -40,12 +40,20 @@ from mood import ajustar_humor, carregar_humor, resetar_humor
 from tts import falar
 from twitch_bot import TWITCH_TRIGGER_MODE, TwitchChatBridge
 from vision_local import VisionWatcher
+from minecraft_bridge import MinecraftBridge
 
 
 TEMPO_SILENCIO = 25
+COOLDOWN_MIC_LIVE_SEC = int(os.getenv("MIC_LIVE_COOLDOWN_SEC", "10"))
 process_lock = threading.Lock()
 modo_mic_live = False
+modo_mic_pausado = False
 ultimo_input = time.time()
+proxima_fala_mic_live = 0.0
+COMANDO_DORMIR = "dormir"
+COMANDO_ACORDAR = "acordar"
+ALIASES_DORMIR = ["cala a boca iara"]
+ALIASES_ACORDAR = ["escuta aqui iara"]
 
 
 def inicializar_avatar():
@@ -62,6 +70,7 @@ def inicializar_avatar():
 
 avatar = inicializar_avatar()
 vision = VisionWatcher()
+mc = MinecraftBridge()
 
 
 def mostrar_prompt():
@@ -102,6 +111,10 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
             prompt_ia = f'Mensagem no chat da Twitch de "{autor}": {entrada}'
             historico_usuario = f"{autor}: {entrada}"
             print(f"\n[TWITCH] {autor} > {entrada}")
+        elif origem == "minecraft":
+            prompt_ia = f'Mensagem no chat do Minecraft de "{autor}": {entrada}'
+            historico_usuario = f"{autor}: {entrada}"
+            print(f"\n[MINECRAFT] {autor} > {entrada}")
 
         if avatar:
             avatar.pensando_on()
@@ -121,6 +134,8 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
 
         if origem == "twitch":
             print(f"[IA->TWITCH] {texto} ({emocao})")
+        elif origem == "minecraft":
+            print(f"[IA->MINECRAFT] {texto} ({emocao})")
         else:
             print(f"\nIA > {texto} ({emocao})\n")
 
@@ -246,6 +261,9 @@ def iniciar_twitch_em_background():
 
 def encerrar_avatar():
     with suppress(Exception):
+        mc.stop()
+
+    with suppress(Exception):
         vision.stop()
 
     if not avatar:
@@ -258,10 +276,32 @@ def encerrar_avatar():
 
 
 print("IA iniciada")
-print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao off | /visao status | /visao agora | /testeanim | /sair")
+print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao off | /visao status | /visao agora | /mc status | /mc cmd <comando> | /testeanim | /sair")
+print(f"No /mic-live: diga '{COMANDO_DORMIR}' para pausar e '{COMANDO_ACORDAR}' para voltar.")
+print("Atalhos de voz: 'cala a boca iara' (pausa) e 'escuta aqui iara' (retoma).")
 
 twitch_thread = iniciar_twitch_em_background()
 print("[TWITCH] Integracao com chat iniciada em background.")
+
+if mc.enabled:
+    def _on_minecraft_chat(user: str, text: str):
+        try:
+            responder_personagem(
+                text,
+                origem="minecraft",
+                autor=user,
+                enviar_chat=mc.send_chat,
+            )
+        except Exception as e:
+            print(f"[MINECRAFT] Erro processando mensagem: {e}")
+
+    try:
+        status = mc.health()
+        print(f"[MINECRAFT] Bridge online: connected={status.get('connected')}")
+        mc.start_polling(_on_minecraft_chat)
+        print("[MINECRAFT] Integracao com chat iniciada em background.")
+    except Exception as e:
+        print(f"[MINECRAFT] Bridge indisponivel: {e}")
 
 if os.getenv("VISION_AUTO_START", "0") == "1":
     if vision.start():
@@ -287,8 +327,25 @@ while True:
             if not entrada:
                 continue
 
+            entrada_lower = entrada.lower()
+
+            if COMANDO_DORMIR in entrada_lower or any(alias in entrada_lower for alias in ALIASES_DORMIR):
+                modo_mic_pausado = True
+                print("Escuta em pausa. Diga 'acordar' para voltar.")
+                continue
+
+            if COMANDO_ACORDAR in entrada_lower or any(alias in entrada_lower for alias in ALIASES_ACORDAR):
+                modo_mic_pausado = False
+                print("Escuta reativada.")
+                continue
+
+            if modo_mic_pausado:
+                continue
+
             if "ativar modo texto" in entrada.lower():
                 modo_mic_live = False
+                modo_mic_pausado = False
+                proxima_fala_mic_live = 0.0
                 print("Voltando pro modo texto")
                 continue
         else:
@@ -318,6 +375,8 @@ while True:
 
             if entrada == "/mic-live":
                 modo_mic_live = True
+                modo_mic_pausado = False
+                proxima_fala_mic_live = 0.0
                 print("Escuta continua ativada")
                 continue
 
@@ -355,6 +414,27 @@ while True:
                     print("[VISAO] Captura visual ativada.")
                 else:
                     print("[VISAO] Ja estava ativa.")
+                continue
+
+            if entrada == "/mc status":
+                try:
+                    status = mc.health()
+                    print(
+                        f"[MINECRAFT] bridge_ok={status.get('ok')} "
+                        f"connected={status.get('connected')} "
+                        f"user={status.get('username')}"
+                    )
+                except Exception as e:
+                    print(f"[MINECRAFT] Falha no status: {e}")
+                continue
+
+            if entrada.startswith("/mc cmd "):
+                try:
+                    cmd = entrada[len("/mc cmd "):].strip()
+                    mc.send_command(cmd)
+                    print(f"[MINECRAFT] Comando enviado: {cmd}")
+                except Exception as e:
+                    print(f"[MINECRAFT] Falha ao enviar comando: {e}")
                 continue
 
             if entrada == "/visao off":
@@ -455,6 +535,18 @@ while True:
                 limpar_historico()
                 print("Historico apagado")
                 continue
+
+        if modo_mic_live:
+            agora = time.time()
+            if agora < proxima_fala_mic_live:
+                restante = int(proxima_fala_mic_live - agora + 0.999)
+                print(f"Aguarde {restante}s para a proxima resposta no /mic-live.")
+                continue
+
+            ultimo_input = agora
+            responder_personagem(entrada, origem="usuario", autor="voce")
+            proxima_fala_mic_live = time.time() + COOLDOWN_MIC_LIVE_SEC
+            continue
 
         ultimo_input = time.time()
         responder_personagem(entrada, origem="usuario", autor="voce")

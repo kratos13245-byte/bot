@@ -4,6 +4,7 @@ import re
 
 import requests
 
+from contexto_minecraft import obter_contexto_minecraft
 from contexto_visao import obter_contexto_visao
 from memory import montar_contexto_memoria
 from mood import obter_contexto_humor
@@ -215,6 +216,7 @@ def _montar_mensagens_base(prompt_usuario: str):
     contexto_memoria = montar_contexto_memoria(prompt_usuario)
     contexto_humor = obter_contexto_humor()
     contexto_visao = obter_contexto_visao()
+    contexto_minecraft = obter_contexto_minecraft()
 
     mensagens = [
         {"role": "system", "content": PERSONALIDADE},
@@ -225,16 +227,26 @@ def _montar_mensagens_base(prompt_usuario: str):
     if contexto_memoria:
         mensagens.append({"role": "system", "content": f"Contexto de memoria:\n{contexto_memoria}"})
 
-    if contexto_visao["resumo"]:
+    visao_ativa = bool(contexto_visao.get("enabled"))
+
+    if contexto_visao["resumo"] and visao_ativa:
         mensagens.append(
             {"role": "system", "content": f"Contexto visual atual da tela:\n{contexto_visao['resumo']}"}
         )
-        if os.getenv("VISION_DEBUG", "0") == "1":
-            print(f"[VISAO->IA] {contexto_visao['resumo']}")
-    elif os.getenv("VISION_DEBUG", "0") == "1":
-        print("[VISAO->IA] (sem contexto visual)")
+    elif (not visao_ativa) and os.getenv("MC_CONTEXT_FALLBACK_WHEN_VISION_OFF", "1") == "1":
+        resumo_mc = str(contexto_minecraft.get("resumo", "")).strip()
+        if resumo_mc:
+            mensagens.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Contexto situacional do Minecraft (fallback de visao):\n"
+                        f"{resumo_mc}"
+                    ),
+                }
+            )
 
-    if contexto_visao["resumo"] and os.getenv("VISION_APPEND_TO_USER", "1") == "1":
+    if contexto_visao["resumo"] and visao_ativa and os.getenv("VISION_APPEND_TO_USER", "1") == "1":
         prompt_usuario = (
             f"{prompt_usuario}\n\n"
             f"[Contexto visual atual da tela para considerar na resposta]\n"
