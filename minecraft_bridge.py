@@ -307,6 +307,22 @@ class MinecraftBridge:
             err = str(out.get("error", "erro desconhecido")).strip()
             return {"handled": True, "summary": f"Nao consegui largar item: {err}"}
 
+        m = re.search(
+            r"(?:coloca|coloque|por|poe|põe|posiciona)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?(?:\s+(no chao|na frente|aqui))?$",
+            msg,
+        )
+        if m:
+            item = self._sanitize_item_query(m.group(1) or "")
+            count = int(m.group(2) or "1")
+            loc = (m.group(3) or "").strip()
+            position = "here" if loc in {"no chao", "aqui"} else "front"
+            out = self.send_action("place_block", {"item": item, "count": count, "position": position})
+            if out.get("ok"):
+                placed = int(out.get("placed", out.get("requested", count)))
+                return {"handled": True, "summary": f"Coloquei {out.get('item', item)} x{placed}."}
+            err = str(out.get("error", "erro desconhecido")).strip()
+            return {"handled": True, "summary": f"Nao consegui colocar bloco: {err}"}
+
         if self._contains_any(
             msg,
             [

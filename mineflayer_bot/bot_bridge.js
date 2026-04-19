@@ -326,6 +326,103 @@ async function dropItem(rawItem, count = 1) {
   }
 }
 
+function _isPlaceableTargetBlock(block) {
+  if (!block) return true;
+  const name = String(block.name || "").toLowerCase();
+  if (["air", "cave_air", "void_air"].includes(name)) return true;
+  return block.boundingBox === "empty";
+}
+
+function _findPlacementSpot(positionMode = "front") {
+  if (!bot?.entity) return null;
+  const feet = bot.entity.position.floored();
+  const mode = String(positionMode || "front").toLowerCase().trim();
+
+  let target = null;
+  if (mode === "here" || mode === "aqui" || mode === "under" || mode === "embaixo") {
+    target = feet.offset(0, -1, 0);
+  } else {
+    const yaw = bot.entity.yaw || 0;
+    const dx = Math.round(-Math.sin(yaw));
+    const dz = Math.round(-Math.cos(yaw));
+    target = feet.offset(dx, 0, dz);
+  }
+
+  const targetBlock = bot.blockAt(target);
+  if (!_isPlaceableTargetBlock(targetBlock)) {
+    return { ok: false, error: "espaco ocupado para colocar bloco" };
+  }
+
+  const refs = [
+    target.offset(0, -1, 0),
+    target.offset(1, 0, 0),
+    target.offset(-1, 0, 0),
+    target.offset(0, 0, 1),
+    target.offset(0, 0, -1),
+    target.offset(0, 1, 0),
+  ];
+
+  for (const pos of refs) {
+    const ref = bot.blockAt(pos);
+    if (!ref || ref.boundingBox === "empty") continue;
+    const faceVector = target.minus(ref.position);
+    if (Math.abs(faceVector.x) + Math.abs(faceVector.y) + Math.abs(faceVector.z) !== 1) continue;
+    return { ok: true, target, ref, faceVector };
+  }
+
+  return { ok: false, error: "nenhum bloco de apoio para posicionar" };
+}
+
+async function placeBlock(rawItem, count = 1, position = "front") {
+  if (!bot || !connected || !mcData) return { ok: false, error: "bot offline" };
+  let query = normalizeText(rawItem || "");
+  query = query.replace(/^(?:um|uma|uns|umas|o|a|os|as)\s+/, "").trim();
+  if (!query) return { ok: false, error: "item vazio" };
+
+  const resolved = _resolveCraftTarget(query) || query;
+  const matched = _findItemsByNameIncludes([resolved, query]).filter((it) => it && it.type != null);
+  if (!matched.length) return { ok: false, error: `item nao encontrado no inventario: ${query}` };
+
+  const qtyRequested = Math.max(1, Number(count) || 1);
+  const qty = Math.min(qtyRequested, matched.reduce((acc, it) => acc + (it.count || 0), 0));
+  if (qty <= 0) return { ok: false, error: "quantidade invalida" };
+
+  const spot = _findPlacementSpot(position);
+  if (!spot?.ok) return { ok: false, error: spot?.error || "nao achei local para posicionar" };
+
+  let placed = 0;
+  try {
+    const item = matched.sort((a, b) => (b.count || 0) - (a.count || 0))[0];
+    await bot.equip(item, "hand");
+    for (let i = 0; i < qty; i += 1) {
+      await bot.placeBlock(spot.ref, spot.faceVector);
+      placed += 1;
+      if (i + 1 < qty) {
+        // para pilha, tenta reposicionar no mesmo local somente se ainda houver espaco
+        const blockNow = bot.blockAt(spot.target);
+        if (!_isPlaceableTargetBlock(blockNow)) break;
+      }
+    }
+    pushEvent("place_done", {
+      item: item.name,
+      requested: qtyRequested,
+      placed,
+      position,
+      target: { x: spot.target.x, y: spot.target.y, z: spot.target.z },
+    });
+    return {
+      ok: true,
+      action: "place_block",
+      item: item.name,
+      requested: qtyRequested,
+      placed,
+      position,
+    };
+  } catch (e) {
+    return { ok: false, error: `falha ao colocar bloco: ${e.message}` };
+  }
+}
+
 function _nearestHostileInRange(range) {
   return Object.values(bot.entities || {})
     .filter((e) => e && isHostileMob(e))
@@ -847,6 +944,21 @@ function maybeHandleIngameCommand(username, rawMessage) {
       .catch((e) => bot.chat(`Erro ao largar item: ${e.message}`));
     return;
   }
+  const placeCmd = msg.match(
+    /^(?:coloca|coloque|por|poe|põe|posiciona)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?(?:\s+(?:no chao|na frente|aqui))?$/i
+  );
+  if (placeCmd) {
+    const item = (placeCmd[1] || "").trim();
+    const count = Number(placeCmd[2] || "1");
+    const pos = msg.includes("no chao") || msg.includes("aqui") ? "here" : "front";
+    placeBlock(item, count, pos)
+      .then((out) => {
+        if (out.ok) bot.chat(`Coloquei ${out.item} x${out.placed}.`);
+        else bot.chat(`Nao consegui colocar bloco: ${out.error}`);
+      })
+      .catch((e) => bot.chat(`Erro ao colocar bloco: ${e.message}`));
+    return;
+  }
   const mineCmd = msg.match(/^mine\s+([a-z0-9_\-\s]+?)(?:\s+(\d+))?$/i);
   if (mineCmd) {
     const resource = (mineCmd[1] || "").trim();
@@ -985,6 +1097,13 @@ app.post("/action", async (req, res) => {
       break;
     case "drop_item":
       out = await dropItem(String(payload.item || ""), Number(payload.count || 1));
+      break;
+    case "place_block":
+      out = await placeBlock(
+        String(payload.item || ""),
+        Number(payload.count || 1),
+        String(payload.position || "front"),
+      );
       break;
     case "stop":
       out = stopAll();

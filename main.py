@@ -78,6 +78,7 @@ ALLOWED_MC_ACTIONS = {
     "mine",
     "craft_tool",
     "drop_item",
+    "place_block",
     "set_combat",
     "set_loot",
     "set_survival",
@@ -189,6 +190,10 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         item = out.get("item")
         dropped = out.get("dropped", out.get("requested", 1))
         feedback = summary or f"Larguei {item} x{dropped}."
+    if out.get("ok") and action == "place_block":
+        item = out.get("item")
+        placed = out.get("placed", out.get("requested", 1))
+        feedback = summary or f"Coloquei {item} x{placed}."
 
     print(f"[MINECRAFT PLANNER] {feedback} | action={action} payload={payload}")
     if enviar_chat:

@@ -103,6 +103,8 @@ O que muda:
 Comandos extras:
 - `inventario` / `mochila`
 - `craft <item> [quantidade]` (ex.: `craft picareta de pedra`)
+- `coloca <bloco> [quantidade] [no chao|na frente|aqui]`
+- `largar <item> [quantidade]`
 
 ## 7) Planner IA + narracao de arredores
 - Planner: quando o parser fixo nao identificar, a IA tenta converter a ordem em acao estruturada segura (whitelist).

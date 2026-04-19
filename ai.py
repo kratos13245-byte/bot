@@ -370,6 +370,7 @@ Acoes permitidas:
 - mine payload: {{"resource":"nome","count":int}}
 - craft_tool payload: {{"item":"nome","count":int}}
 - drop_item payload: {{"item":"nome","count":int}}
+- place_block payload: {{"item":"nome","count":int,"position":"front|here"}}
 - set_combat payload: {{"enabled":true|false}}
 - set_loot payload: {{"enabled":true|false}}
 - set_survival payload: {{"enabled":true|false}}
