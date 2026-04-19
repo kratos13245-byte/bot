@@ -5,6 +5,7 @@ Use no projeto (`/workspace/bot/.env` ou local):
 
 ```env
 ENABLE_MINECRAFT=1
+MC_RUNTIME_MODE=quality
 MC_BRIDGE_URL=http://127.0.0.1:8095
 
 MC_HOST=127.0.0.1
@@ -81,12 +82,16 @@ MC_CONTEXT_INV_MAX_ITEMS=12
 MC_CONTEXT_MAX_ENTITY_DISTANCE=28
 MC_CONTEXT_MAX_PLAYERS=4
 MC_CONTEXT_MAX_MOBS=6
+MC_INTERACT_MAX_DISTANCE=12
 MC_AI_ACTION_PLANNER=1
 MC_NARRATION_ENABLED=1
 MC_NARRATION_INTERVAL_SEC=5
 MC_NARRATION_COOLDOWN_SEC=28
 MC_NARRATION_TO_CHAT=1
 MC_NARRATION_TO_TTS=0
+OBSIDIAN_AUTO_MEMORY=1
+OBSIDIAN_VAULT_DIR=.
+OBSIDIAN_MEMORY_BASE=IARA
 ```
 
 ## 6) Fase 3 (autonomia avancada)
@@ -108,6 +113,7 @@ Comandos extras:
 - `craft <item> [quantidade]` (ex.: `craft picareta de pedra`)
 - `coloca <bloco> [quantidade] [no chao|na frente|aqui]`
 - `largar <item> [quantidade]`
+- `abre <bloco>` / `usa <bloco>` / `interage <bloco>`
 
 ## 7) Planner IA + narracao de arredores
 - Planner: quando o parser fixo nao identificar, a IA tenta converter a ordem em acao estruturada segura (whitelist).
@@ -117,3 +123,14 @@ Comandos locais:
 - `/mc ai <ordem>`
 - `/mc narracao on`
 - `/mc narracao off`
+
+Perfis:
+- `MC_RUNTIME_MODE=quality` -> respostas/contexto mais ricos (padrao)
+- `MC_RUNTIME_MODE=performance` -> menos carga e menor chance de lag/pulos
+
+Memoria automatica no Obsidian:
+- quando `OBSIDIAN_AUTO_MEMORY=1`, o sistema registra eventos em:
+  - `IARA/Sessions/`
+  - `IARA/People/`
+  - `IARA/Learnings/`
+- os arquivos usam links `[[...]]` para facilitar visualizacao em Graph View.

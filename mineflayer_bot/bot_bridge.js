@@ -16,10 +16,12 @@ const MC_OWNER = (process.env.MC_OWNER || "").trim();
 
 const BRIDGE_HOST = process.env.MC_BRIDGE_HOST || "127.0.0.1";
 const BRIDGE_PORT = Number(process.env.MC_BRIDGE_PORT || "8095");
+const MC_RUNTIME_MODE = (process.env.MC_RUNTIME_MODE || "quality").toLowerCase().trim();
+const PERF_MODE = MC_RUNTIME_MODE === "performance";
 
-const AUTO_COMBAT_RANGE = Number(process.env.MC_AUTO_COMBAT_RANGE || "6");
-const AUTO_LOOT_RANGE = Number(process.env.MC_AUTO_LOOT_RANGE || "8");
-const AUTO_TICK_MS = Number(process.env.MC_AUTO_TICK_MS || "1200");
+const AUTO_COMBAT_RANGE = Number(process.env.MC_AUTO_COMBAT_RANGE || (PERF_MODE ? "5" : "6"));
+const AUTO_LOOT_RANGE = Number(process.env.MC_AUTO_LOOT_RANGE || (PERF_MODE ? "6" : "8"));
+const AUTO_TICK_MS = Number(process.env.MC_AUTO_TICK_MS || (PERF_MODE ? "1700" : "1200"));
 const MC_LOW_HEALTH = Number(process.env.MC_LOW_HEALTH || "8");
 const MC_LOW_FOOD = Number(process.env.MC_LOW_FOOD || "12");
 const MC_FLEE_DISTANCE = Number(process.env.MC_FLEE_DISTANCE || "18");
@@ -27,10 +29,11 @@ const MC_EXPLORE_HISTORY_SIZE = Number(process.env.MC_EXPLORE_HISTORY_SIZE || "8
 const MC_EXPLORE_MIN_TARGET_DISTANCE = Number(process.env.MC_EXPLORE_MIN_TARGET_DISTANCE || "30");
 const MC_STUCK_MIN_MOVE = Number(process.env.MC_STUCK_MIN_MOVE || "1.2");
 const MC_STUCK_TICKS = Number(process.env.MC_STUCK_TICKS || "5");
-const MC_CONTEXT_INV_MAX_ITEMS = Number(process.env.MC_CONTEXT_INV_MAX_ITEMS || "12");
-const MC_CONTEXT_MAX_ENTITY_DISTANCE = Number(process.env.MC_CONTEXT_MAX_ENTITY_DISTANCE || "28");
-const MC_CONTEXT_MAX_PLAYERS = Number(process.env.MC_CONTEXT_MAX_PLAYERS || "4");
-const MC_CONTEXT_MAX_MOBS = Number(process.env.MC_CONTEXT_MAX_MOBS || "6");
+const MC_CONTEXT_INV_MAX_ITEMS = Number(process.env.MC_CONTEXT_INV_MAX_ITEMS || (PERF_MODE ? "8" : "12"));
+const MC_CONTEXT_MAX_ENTITY_DISTANCE = Number(process.env.MC_CONTEXT_MAX_ENTITY_DISTANCE || (PERF_MODE ? "16" : "28"));
+const MC_CONTEXT_MAX_PLAYERS = Number(process.env.MC_CONTEXT_MAX_PLAYERS || (PERF_MODE ? "3" : "4"));
+const MC_CONTEXT_MAX_MOBS = Number(process.env.MC_CONTEXT_MAX_MOBS || (PERF_MODE ? "4" : "6"));
+const MC_INTERACT_MAX_DISTANCE = Number(process.env.MC_INTERACT_MAX_DISTANCE || (PERF_MODE ? "10" : "12"));
 
 const events = [];
 let eventId = 0;
@@ -59,6 +62,7 @@ const state = {
   lastPos: null,
   stuckTicks: 0,
   basePosition: null,
+  lastGoalKey: "",
 };
 
 function pushEvent(type, payload) {
@@ -111,7 +115,16 @@ function _setModeIdle() {
   state.exploreAssignedTs = 0;
   state.lastPos = null;
   state.stuckTicks = 0;
+  state.lastGoalKey = "";
   if (bot?.pathfinder) bot.pathfinder.setGoal(null);
+}
+
+function _setGoalStable(goal, goalKey, dynamic = false) {
+  if (!bot?.pathfinder) return;
+  const key = String(goalKey || "");
+  if (key && state.lastGoalKey === key) return;
+  bot.pathfinder.setGoal(goal, dynamic);
+  state.lastGoalKey = key;
 }
 
 function _distance3(a, b) {
@@ -355,6 +368,82 @@ function _findNearbyCraftingTable(maxDistance = 8) {
   const tableId = mcData?.blocksByName?.crafting_table?.id;
   if (!tableId || !bot?.findBlock) return null;
   return bot.findBlock({ matching: tableId, maxDistance }) || null;
+}
+
+function _resolveBlockTarget(rawName) {
+  const t = normalizeText(rawName || "").replace(/^(?:um|uma|uns|umas|o|a|os|as)\s+/, "").trim();
+  if (!t) return null;
+  const aliases = {
+    "fornalha": "furnace",
+    "mesa de trabalho": "crafting_table",
+    "mesa de craft": "crafting_table",
+    "crafting table": "crafting_table",
+    "crafting_table": "crafting_table",
+    "bancada": "crafting_table",
+    "mesa": "crafting_table",
+    "bau": "chest",
+    "bau duplo": "chest",
+    "bau grande": "chest",
+    "cofre": "chest",
+    "forja": "smithing_table",
+    "bigorna": "anvil",
+    "anvil": "anvil",
+  };
+  return aliases[t] || t;
+}
+
+function _findNearestBlockByName(blockName, maxDistance = MC_INTERACT_MAX_DISTANCE) {
+  if (!mcData?.blocksByName || !bot?.findBlock) return null;
+  const b = mcData.blocksByName[blockName];
+  if (!b) return null;
+  return bot.findBlock({ matching: b.id, maxDistance }) || null;
+}
+
+async function _waitUntil(fn, timeoutMs = 9000, intervalMs = 180) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      if (fn()) return true;
+    } catch (_e) {}
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
+}
+
+async function interactBlock(rawBlock, maxDistance = MC_INTERACT_MAX_DISTANCE) {
+  if (!bot || !connected || !mcData) return { ok: false, error: "bot offline" };
+  const blockName = _resolveBlockTarget(rawBlock);
+  if (!blockName) return { ok: false, error: "bloco alvo vazio" };
+
+  const block = _findNearestBlockByName(blockName, Number(maxDistance) || MC_INTERACT_MAX_DISTANCE);
+  if (!block) return { ok: false, error: `bloco nao encontrado por perto: ${blockName}` };
+
+  const targetPos = block.position;
+  let dist = bot.entity.position.distanceTo(targetPos);
+  if (dist > 4.8) {
+    if (!bot.pathfinder) return { ok: false, error: "pathfinder offline" };
+    bot.pathfinder.setGoal(new goals.GoalNear(targetPos.x, targetPos.y, targetPos.z, 2));
+    const reached = await _waitUntil(
+      () => bot.entity.position.distanceTo(targetPos) <= 4.8,
+      12000,
+      200,
+    );
+    if (!reached) return { ok: false, error: `nao consegui aproximar do bloco: ${blockName}` };
+    dist = bot.entity.position.distanceTo(targetPos);
+  }
+
+  try {
+    await bot.lookAt(targetPos.offset(0.5, 0.5, 0.5), true);
+    await bot.activateBlock(block);
+    pushEvent("interact_done", {
+      block: block.name,
+      distance: Number(dist.toFixed(2)),
+      pos: { x: targetPos.x, y: targetPos.y, z: targetPos.z },
+    });
+    return { ok: true, action: "interact_block", block: block.name, distance: Number(dist.toFixed(2)) };
+  } catch (e) {
+    return { ok: false, error: `falha ao interagir com bloco: ${e.message}` };
+  }
 }
 
 async function craftItem(rawItem, count = 1) {
@@ -843,12 +932,17 @@ async function runAutonomyTick() {
 
   if (state.mode === "follow" && state.followTarget) {
     const targetEntity = bot.players[state.followTarget]?.entity;
-    if (targetEntity) bot.pathfinder.setGoal(new goals.GoalFollow(targetEntity, 2), true);
+    if (targetEntity) {
+      const p = targetEntity.position;
+      const key = `follow:${state.followTarget}:${Math.round(p.x)}:${Math.round(p.y)}:${Math.round(p.z)}`;
+      _setGoalStable(new goals.GoalFollow(targetEntity, 2), key, true);
+    }
     return;
   }
 
   if (state.mode === "goto" && state.goto) {
-    bot.pathfinder.setGoal(new goals.GoalNear(state.goto.x, state.goto.y, state.goto.z, state.goto.range || 2));
+    const key = `goto:${Math.round(state.goto.x)}:${Math.round(state.goto.y)}:${Math.round(state.goto.z)}:${state.goto.range || 2}`;
+    _setGoalStable(new goals.GoalNear(state.goto.x, state.goto.y, state.goto.z, state.goto.range || 2), key, false);
     return;
   }
 
@@ -886,13 +980,17 @@ async function runAutonomyTick() {
     if (needNewTarget) _pickExploreTarget(origin);
 
     if (state.exploreTarget) {
-      bot.pathfinder.setGoal(
+      const ex = state.exploreTarget;
+      const key = `explore:${Math.round(ex.x)}:${Math.round(ex.y)}:${Math.round(ex.z)}:${ex.range || 3}`;
+      _setGoalStable(
         new goals.GoalNear(
-          state.exploreTarget.x,
-          state.exploreTarget.y,
-          state.exploreTarget.z,
-          state.exploreTarget.range || 3
-        )
+          ex.x,
+          ex.y,
+          ex.z,
+          ex.range || 3
+        ),
+        key,
+        false
       );
     }
     return;
@@ -901,10 +999,10 @@ async function runAutonomyTick() {
   if (state.mode === "find_biome" && state.biomeTarget) {
     const anchor = _findBiomeAnchor(state.biomeTarget);
     if (anchor) {
-      bot.pathfinder.setGoal(new goals.GoalNear(anchor.x, anchor.y, anchor.z, 3));
+      _setGoalStable(new goals.GoalNear(anchor.x, anchor.y, anchor.z, 3), `biome:${anchor.x}:${anchor.y}:${anchor.z}`, false);
       if (state.resourceTarget) {
         const rb = _findResourceBlock(state.resourceTarget);
-        if (rb) bot.pathfinder.setGoal(new goals.GoalNear(rb.x, rb.y, rb.z, 2));
+        if (rb) _setGoalStable(new goals.GoalNear(rb.x, rb.y, rb.z, 2), `biome_resource:${rb.x}:${rb.y}:${rb.z}`, false);
       }
     }
     return;
@@ -912,7 +1010,7 @@ async function runAutonomyTick() {
 
   if (state.mode === "find_resource" && state.resourceTarget) {
     const rb = _findResourceBlock(state.resourceTarget);
-    if (rb) bot.pathfinder.setGoal(new goals.GoalNear(rb.x, rb.y, rb.z, 2));
+    if (rb) _setGoalStable(new goals.GoalNear(rb.x, rb.y, rb.z, 2), `resource:${rb.x}:${rb.y}:${rb.z}`, false);
     return;
   }
 
@@ -926,7 +1024,9 @@ async function runAutonomyTick() {
     const pos = _findResourceBlock(state.miningTarget);
     if (!pos) {
       const p = bot.entity.position;
-      bot.pathfinder.setGoal(new goals.GoalNear(p.x + (Math.random() * 20 - 10), p.y, p.z + (Math.random() * 20 - 10), 2));
+      const tx = p.x + (Math.random() * 20 - 10);
+      const tz = p.z + (Math.random() * 20 - 10);
+      _setGoalStable(new goals.GoalNear(tx, p.y, tz, 2), `mine_roam:${Math.round(tx)}:${Math.round(p.y)}:${Math.round(tz)}`, false);
       return;
     }
 
@@ -934,7 +1034,11 @@ async function runAutonomyTick() {
     if (!block) return;
     const dist = bot.entity.position.distanceTo(block.position);
     if (dist > 4.5) {
-      bot.pathfinder.setGoal(new goals.GoalNear(block.position.x, block.position.y, block.position.z, 2));
+      _setGoalStable(
+        new goals.GoalNear(block.position.x, block.position.y, block.position.z, 2),
+        `mine_target:${block.position.x}:${block.position.y}:${block.position.z}`,
+        false,
+      );
       return;
     }
 
@@ -1057,6 +1161,18 @@ function maybeHandleIngameCommand(username, rawMessage) {
       .catch((e) => bot.chat(`Erro ao colocar bloco: ${e.message}`));
     return;
   }
+  const interactCmd = msg.match(/^(?:interage|interagir|usa|use|abre|abrir)\s+(?:o|a)?\s*([a-z0-9_\-\s]+)$/i);
+  if (interactCmd) {
+    const block = (interactCmd[1] || "").trim();
+    interactBlock(block)
+      .then((out) => {
+        if (out.ok) bot.chat(`Interagi com ${out.block}.`);
+        else bot.chat(`Nao consegui interagir: ${out.error}`);
+      })
+      .catch((e) => bot.chat(`Erro ao interagir: ${e.message}`));
+    return;
+  }
+
   const mineCmd = msg.match(/^mine\s+([a-z0-9_\-\s]+?)(?:\s+(\d+))?$/i);
   if (mineCmd) {
     const resource = (mineCmd[1] || "").trim();
@@ -1203,6 +1319,12 @@ app.post("/action", async (req, res) => {
         String(payload.position || "front"),
       );
       break;
+    case "interact_block":
+      out = await interactBlock(
+        String(payload.block || ""),
+        Number(payload.max_distance || MC_INTERACT_MAX_DISTANCE),
+      );
+      break;
     case "stop":
       out = stopAll();
       break;
@@ -1241,6 +1363,7 @@ app.get("/context", (_req, res) => {
 
 app.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
   console.log(`[MC BRIDGE] API em http://${BRIDGE_HOST}:${BRIDGE_PORT}`);
+  console.log(`[MC BRIDGE] runtime mode: ${PERF_MODE ? "performance" : "quality"}`);
 });
 
 createBot();

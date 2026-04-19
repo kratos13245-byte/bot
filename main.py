@@ -5,6 +5,7 @@ import queue
 import re
 import threading
 import time
+import random
 from contextlib import suppress
 
 
@@ -44,6 +45,7 @@ from memory import (
     salvar_nota,
 )
 from mood import ajustar_humor, carregar_humor, resetar_humor
+from obsidian_memory import ObsidianMemory
 from procedure_memory import montar_contexto_procedural
 from tts import falar
 from twitch_bot import TWITCH_TRIGGER_MODE, TwitchChatBridge
@@ -70,6 +72,24 @@ MC_NARRATION_TO_CHAT = os.getenv("MC_NARRATION_TO_CHAT", "1") == "1"
 MC_NARRATION_TO_TTS = os.getenv("MC_NARRATION_TO_TTS", "0") == "1"
 MC_CHAT_QUEUE_MAX = int(os.getenv("MC_CHAT_QUEUE_MAX", "150"))
 MC_LATEST_COMMAND_WINS = os.getenv("MC_LATEST_COMMAND_WINS", "1") == "1"
+MC_STOP_ON_NEW_COMMAND = os.getenv("MC_STOP_ON_NEW_COMMAND", "0") == "1"
+MC_NEGOTIATION_MODE = os.getenv("MC_NEGOTIATION_MODE", "1") == "1"
+MC_NEGOTIATION_PROB = float(os.getenv("MC_NEGOTIATION_PROB", "0.35"))
+MC_NEGOTIATION_COOLDOWN_SEC = float(os.getenv("MC_NEGOTIATION_COOLDOWN_SEC", "20"))
+MC_NEGOTIATION_TTL_SEC = float(os.getenv("MC_NEGOTIATION_TTL_SEC", "120"))
+MC_RUNTIME_MODE = os.getenv("MC_RUNTIME_MODE", "quality").strip().lower()
+
+# Perfis de execucao: qualidade (resposta mais rica) vs desempenho (menos carga/latencia).
+if MC_RUNTIME_MODE == "performance":
+    MC_AI_ACTION_PLANNER = os.getenv("MC_AI_ACTION_PLANNER", "0") == "1"
+    MC_NARRATION_ENABLED_DEFAULT = os.getenv("MC_NARRATION_ENABLED", "0") == "1"
+    MC_NARRATION_INTERVAL_SEC = float(os.getenv("MC_NARRATION_INTERVAL_SEC", "30"))
+    MC_NARRATION_COOLDOWN_SEC = float(os.getenv("MC_NARRATION_COOLDOWN_SEC", "75"))
+    MC_NARRATION_TO_TTS = os.getenv("MC_NARRATION_TO_TTS", "0") == "1"
+    MC_CHAT_QUEUE_MAX = int(os.getenv("MC_CHAT_QUEUE_MAX", "80"))
+else:
+    # quality (default)
+    MC_RUNTIME_MODE = "quality"
 ALLOWED_MC_ACTIONS = {
     "none",
     "follow_player",
@@ -84,6 +104,7 @@ ALLOWED_MC_ACTIONS = {
     "craft_tool",
     "drop_item",
     "place_block",
+    "interact_block",
     "set_combat",
     "set_loot",
     "set_survival",
@@ -112,6 +133,9 @@ mc_narracao_thread = None
 mc_chat_queue = queue.Queue(maxsize=max(10, MC_CHAT_QUEUE_MAX))
 mc_chat_worker_stop = threading.Event()
 mc_chat_worker_thread = None
+mc_pending_negotiation_by_user = {}
+mc_last_negotiation_ts = 0.0
+obsidian_memory = ObsidianMemory()
 
 
 def mostrar_prompt():
@@ -148,6 +172,7 @@ def _is_minecraft_command_message(text: str) -> bool:
         r"\b(?:craft|faca|faz|cria|monta|construir)\b",
         r"\b(?:largar|dropar|dropa|descarta|joga fora)\b",
         r"\b(?:coloca|coloque|poe|põe|posiciona)\b",
+        r"\b(?:interage|interagir|usa|use|abre|abrir)\b",
         r"\b(?:combate|loot|sobrevivencia)\b",
     ]
     return any(re.search(p, msg) for p in patterns)
@@ -165,6 +190,90 @@ def _drain_mc_chat_queue() -> int:
             with suppress(Exception):
                 mc_chat_queue.task_done()
     return removed
+
+
+def _is_negotiation_confirmation(text: str) -> bool:
+    msg = (text or "").strip().lower()
+    if not msg:
+        return False
+    checks = [
+        "insisto",
+        "por favor",
+        "faz isso",
+        "faz agora",
+        "ok iara",
+        "ta bom iara",
+        "autorizo",
+        "pode executar",
+        "manda ver",
+    ]
+    return any(c in msg for c in checks)
+
+
+def _is_negotiation_cancel(text: str) -> bool:
+    msg = (text or "").strip().lower()
+    checks = ["cancela", "deixa pra la", "esquece", "parar ordem", "anula comando"]
+    return any(c in msg for c in checks)
+
+
+def _cleanup_stale_negotiations():
+    now = time.time()
+    stale = [u for u, v in mc_pending_negotiation_by_user.items() if now - v.get("ts", 0) > MC_NEGOTIATION_TTL_SEC]
+    for u in stale:
+        mc_pending_negotiation_by_user.pop(u, None)
+
+
+def _maybe_gate_minecraft_command(autor: str, entrada: str, enviar_chat=None):
+    global mc_last_negotiation_ts
+    if not MC_NEGOTIATION_MODE:
+        return {"blocked": False}
+
+    _cleanup_stale_negotiations()
+
+    msg = (entrada or "").strip()
+    if not _is_minecraft_command_message(msg):
+        return {"blocked": False}
+
+    author_key = (autor or "desconhecido").strip().lower()
+
+    if _is_negotiation_cancel(msg):
+        if author_key in mc_pending_negotiation_by_user:
+            mc_pending_negotiation_by_user.pop(author_key, None)
+            texto = "Fechou, comando cancelado."
+            if enviar_chat:
+                with suppress(Exception):
+                    enviar_chat(texto)
+            return {"blocked": True, "reply": texto}
+        return {"blocked": False}
+
+    pending = mc_pending_negotiation_by_user.get(author_key)
+    if pending:
+        if _is_negotiation_confirmation(msg):
+            original = pending.get("command", "").strip()
+            mc_pending_negotiation_by_user.pop(author_key, None)
+            if original:
+                return {"blocked": False, "override_command": original}
+            return {"blocked": False}
+        texto = "Ainda nao me convenceu. Se quiser insistir, manda um 'insisto' ou 'faz isso agora'."
+        if enviar_chat:
+            with suppress(Exception):
+                enviar_chat(texto)
+        return {"blocked": True, "reply": texto}
+
+    now = time.time()
+    if (now - mc_last_negotiation_ts) >= MC_NEGOTIATION_COOLDOWN_SEC and random.random() < max(0.0, min(1.0, MC_NEGOTIATION_PROB)):
+        mc_last_negotiation_ts = now
+        mc_pending_negotiation_by_user[author_key] = {"command": msg, "ts": now}
+        texto = (
+            "Hmm... nao vou obedecer cegamente agora. "
+            "Me convence melhor e eu executo."
+        )
+        if enviar_chat:
+            with suppress(Exception):
+                enviar_chat(texto)
+        return {"blocked": True, "reply": texto}
+
+    return {"blocked": False}
 
 
 def _extrair_evento_minecraft(ctx: dict):
@@ -225,12 +334,26 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         return None
     if action not in ALLOWED_MC_ACTIONS:
         print(f"[MINECRAFT] Planner sugeriu acao invalida: {action}")
+        obsidian_memory.record_minecraft_event(
+            user=autor,
+            command=entrada,
+            status="planner_invalid",
+            summary=f"acao invalida sugerida: {action}",
+            action="planner_invalid",
+        )
         return None
 
     try:
         out = mc.send_action(action, payload)
     except Exception as e:
         print(f"[MINECRAFT] Falha ao executar acao planejada ({action}): {e}")
+        obsidian_memory.record_minecraft_event(
+            user=autor,
+            command=entrada,
+            status="planner_error",
+            summary=str(e),
+            action=action,
+        )
         return None
 
     feedback = summary or f"Acao executada: {action}."
@@ -246,8 +369,18 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         item = out.get("item")
         placed = out.get("placed", out.get("requested", 1))
         feedback = summary or f"Coloquei {item} x{placed}."
+    if out.get("ok") and action == "interact_block":
+        block = out.get("block")
+        feedback = summary or f"Interagi com {block}."
 
     print(f"[MINECRAFT PLANNER] {feedback} | action={action} payload={payload}")
+    obsidian_memory.record_minecraft_event(
+        user=autor,
+        command=entrada,
+        status="planner_ok",
+        summary=feedback,
+        action=action,
+    )
     if enviar_chat:
         with suppress(Exception):
             enviar_chat(feedback)
@@ -286,7 +419,17 @@ def iniciar_narracao_minecraft():
             ready = (now - last_comment_ts) >= MC_NARRATION_COOLDOWN_SEC
 
             if changed and ready:
-                with process_lock:
+                # Nao disputar prioridade com comandos/chat.
+                if not mc_chat_queue.empty():
+                    mc_narracao_stop.wait(MC_NARRATION_INTERVAL_SEC)
+                    continue
+
+                acquired = process_lock.acquire(blocking=False)
+                if not acquired:
+                    mc_narracao_stop.wait(MC_NARRATION_INTERVAL_SEC)
+                    continue
+
+                try:
                     try:
                         comentario = gerar_comentario_minecraft(resumo, evento=evento)
                         texto = str(comentario.get("texto", "")).strip()
@@ -306,6 +449,8 @@ def iniciar_narracao_minecraft():
                                 falar(texto, emocao=emocao, avatar=avatar)
                         last_comment_ts = now
                         last_context_key = key
+                finally:
+                    process_lock.release()
 
             mc_narracao_stop.wait(MC_NARRATION_INTERVAL_SEC)
 
@@ -344,6 +489,68 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
     if not entrada:
         return None
 
+    # Fast-path de comandos Minecraft para evitar fila/lag quando houver burst de ordens.
+    if origem == "minecraft":
+        gate = _maybe_gate_minecraft_command(autor, entrada, enviar_chat=enviar_chat)
+        if gate.get("blocked"):
+            texto = str(gate.get("reply", "Vamos discutir isso melhor antes.")).strip()
+            print(f"[MINECRAFT NEGOCIACAO] {texto}")
+            obsidian_memory.record_minecraft_event(
+                user=autor,
+                command=entrada,
+                status="negotiation_block",
+                summary=texto,
+                action="negotiation",
+            )
+            return {
+                "texto": texto,
+                "emocao": "normal",
+                "humor": {"estado": "provocadora", "paciencia": 6, "delta": 0, "motivo": "negociacao"},
+            }
+        if gate.get("override_command"):
+            entrada = str(gate.get("override_command")).strip()
+
+        try:
+            cmd_result = mc.try_handle_natural_command(autor, entrada)
+        except Exception as e:
+            cmd_result = {"handled": False}
+            print(f"[MINECRAFT] Falha ao interpretar comando: {e}")
+            obsidian_memory.record_minecraft_event(
+                user=autor,
+                command=entrada,
+                status="command_error",
+                summary=str(e),
+                action="command_parser",
+            )
+
+        if cmd_result.get("handled"):
+            resumo = str(cmd_result.get("summary", "Comando executado.")).strip()
+            print(f"[MINECRAFT ACTION] {resumo}")
+            obsidian_memory.record_minecraft_event(
+                user=autor,
+                command=entrada,
+                status="command_ok",
+                summary=resumo,
+                action="command_parser",
+            )
+            if enviar_chat:
+                try:
+                    enviar_chat(resumo)
+                except Exception as e:
+                    print(f"[MINECRAFT] Falha ao enviar feedback de acao: {e}")
+
+            if os.getenv("MC_SKIP_AI_ON_COMMAND", "1") == "1":
+                return {
+                    "texto": resumo,
+                    "emocao": "normal",
+                    "humor": {"estado": "calma", "paciencia": 6, "delta": 0, "motivo": "comando"},
+                }
+
+        else:
+            planned = _tentar_acao_planejada_minecraft(autor, entrada, enviar_chat=enviar_chat)
+            if planned and os.getenv("MC_SKIP_AI_ON_COMMAND", "1") == "1":
+                return planned
+
     with process_lock:
         humor = ajustar_humor(entrada)
         print(
@@ -359,32 +566,6 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
             historico_usuario = f"{autor}: {entrada}"
             print(f"\n[TWITCH] {autor} > {entrada}")
         elif origem == "minecraft":
-            try:
-                cmd_result = mc.try_handle_natural_command(autor, entrada)
-            except Exception as e:
-                cmd_result = {"handled": False}
-                print(f"[MINECRAFT] Falha ao interpretar comando: {e}")
-
-            if cmd_result.get("handled"):
-                resumo = str(cmd_result.get("summary", "Comando executado.")).strip()
-                print(f"[MINECRAFT ACTION] {resumo}")
-                if enviar_chat:
-                    try:
-                        enviar_chat(resumo)
-                    except Exception as e:
-                        print(f"[MINECRAFT] Falha ao enviar feedback de acao: {e}")
-
-                if os.getenv("MC_SKIP_AI_ON_COMMAND", "1") == "1":
-                    return {
-                        "texto": resumo,
-                        "emocao": "normal",
-                        "humor": {"estado": "calma", "paciencia": 6, "delta": 0, "motivo": "comando"},
-                    }
-            else:
-                planned = _tentar_acao_planejada_minecraft(autor, entrada, enviar_chat=enviar_chat)
-                if planned and os.getenv("MC_SKIP_AI_ON_COMMAND", "1") == "1":
-                    return planned
-
             prompt_ia = f'Mensagem no chat do Minecraft de "{autor}": {entrada}'
             historico_usuario = f"{autor}: {entrada}"
             print(f"\n[MINECRAFT] {autor} > {entrada}")
@@ -560,6 +741,7 @@ def encerrar_avatar():
 
 
 print("IA iniciada")
+print(f"Modo Minecraft: {MC_RUNTIME_MODE}")
 print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao off | /visao status | /visao agora | /mc status | /mc cmd <comando> | /mc ai <ordem> | /mc narracao on|off | /testeanim | /sair")
 print(f"No /mic-live: diga '{COMANDO_DORMIR}' para pausar e '{COMANDO_ACORDAR}' para voltar.")
 print("Atalhos de voz: 'cala a boca iara' (pausa) e 'escuta aqui iara' (retoma).")
@@ -574,8 +756,9 @@ if mc.enabled:
                 removed = _drain_mc_chat_queue()
                 if removed:
                     print(f"[MINECRAFT] Comando novo recebido, descartei {removed} mensagem(ns) pendente(s).")
-                with suppress(Exception):
-                    mc.send_action("stop", {})
+                if MC_STOP_ON_NEW_COMMAND:
+                    with suppress(Exception):
+                        mc.send_action("stop", {})
             mc_chat_queue.put_nowait((user, text))
         except queue.Full:
             # Evita travar o polling quando houver rajada de mensagens.

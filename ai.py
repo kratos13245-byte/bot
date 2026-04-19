@@ -379,6 +379,7 @@ Acoes permitidas:
 - craft_tool payload: {{"item":"nome","count":int}}
 - drop_item payload: {{"item":"nome","count":int}}
 - place_block payload: {{"item":"nome","count":int,"position":"front|here"}}
+- interact_block payload: {{"block":"nome","max_distance":int}}
 - set_combat payload: {{"enabled":true|false}}
 - set_loot payload: {{"enabled":true|false}}
 - set_survival payload: {{"enabled":true|false}}

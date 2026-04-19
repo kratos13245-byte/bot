@@ -179,6 +179,11 @@ class MinecraftBridge:
         q = re.sub(r"^(?:um|uma|uns|umas|o|a|os|as)\s+", "", q).strip()
         return q
 
+    def _sanitize_block_query(self, text: str) -> str:
+        q = self._normalize(text)
+        q = re.sub(r"^(?:um|uma|uns|umas|o|a|os|as)\s+", "", q).strip()
+        return q
+
     def try_handle_natural_command(self, author: str, text: str):
         raw = (text or "").strip()
         if not raw:
@@ -336,6 +341,18 @@ class MinecraftBridge:
                 return {"handled": True, "summary": f"Coloquei {out.get('item', item)} x{placed}."}
             err = str(out.get("error", "erro desconhecido")).strip()
             return {"handled": True, "summary": f"Nao consegui colocar bloco: {err}"}
+
+        m = re.search(
+            r"(?:interage|interagir|usa|use|abre|abrir)\s+(?:o|a)?\s*([a-z0-9_\-\s]+)$",
+            msg,
+        )
+        if m:
+            block = self._sanitize_block_query(m.group(1) or "")
+            out = self.send_action("interact_block", {"block": block})
+            if out.get("ok"):
+                return {"handled": True, "summary": f"Interagi com {out.get('block', block)}."}
+            err = str(out.get("error", "erro desconhecido")).strip()
+            return {"handled": True, "summary": f"Nao consegui interagir: {err}"}
 
         if self._contains_any(
             msg,
