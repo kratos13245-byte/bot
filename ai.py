@@ -347,12 +347,20 @@ Formato:
     }
 
 
-def planejar_acao_minecraft(texto_usuario: str, contexto_minecraft: str = "", autor: str = "usuario") -> dict:
+def planejar_acao_minecraft(
+    texto_usuario: str,
+    contexto_minecraft: str = "",
+    autor: str = "usuario",
+    contexto_procedural: str = "",
+) -> dict:
     prompt = f"""
 Voce e um planejador de acoes para bot no Minecraft.
 Entrada do jogador "{autor}": {texto_usuario}
 Contexto atual:
 {contexto_minecraft or "(sem contexto)"}
+
+Memoria procedural relevante:
+{contexto_procedural or "(sem nota procedural relevante)"}
 
 Apenas escolha acao se houver um pedido claro de execucao agora.
 Se for conversa normal, resposta social, pergunta vaga, ou sem ordem clara: retorne acao "none".

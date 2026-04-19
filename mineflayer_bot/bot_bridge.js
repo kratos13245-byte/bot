@@ -28,6 +28,9 @@ const MC_EXPLORE_MIN_TARGET_DISTANCE = Number(process.env.MC_EXPLORE_MIN_TARGET_
 const MC_STUCK_MIN_MOVE = Number(process.env.MC_STUCK_MIN_MOVE || "1.2");
 const MC_STUCK_TICKS = Number(process.env.MC_STUCK_TICKS || "5");
 const MC_CONTEXT_INV_MAX_ITEMS = Number(process.env.MC_CONTEXT_INV_MAX_ITEMS || "12");
+const MC_CONTEXT_MAX_ENTITY_DISTANCE = Number(process.env.MC_CONTEXT_MAX_ENTITY_DISTANCE || "28");
+const MC_CONTEXT_MAX_PLAYERS = Number(process.env.MC_CONTEXT_MAX_PLAYERS || "4");
+const MC_CONTEXT_MAX_MOBS = Number(process.env.MC_CONTEXT_MAX_MOBS || "6");
 
 const events = [];
 let eventId = 0;
@@ -153,6 +156,12 @@ function _findItemsByNameIncludes(candidates) {
   return items.filter((it) => candidates.some((c) => normalizeText(it.name).includes(normalizeText(c))));
 }
 
+function _inventoryCountByPredicate(predicate) {
+  return _inventoryItems()
+    .filter(predicate)
+    .reduce((acc, it) => acc + (it.count || 0), 0);
+}
+
 function _countItemsByNameIncludes(candidates) {
   const items = _inventoryItems();
   const normalized = candidates.map((c) => normalizeText(c));
@@ -265,6 +274,83 @@ function _resolveCraftTarget(rawName) {
   return null;
 }
 
+function _logToPlankName(logName) {
+  const n = String(logName || "");
+  if (n.endsWith("_log")) return n.replace(/_log$/, "_planks");
+  if (n.endsWith("_wood")) return n.replace(/_wood$/, "_planks");
+  if (n.endsWith("_stem")) return n.replace(/_stem$/, "_planks");
+  if (n.endsWith("_hyphae")) return n.replace(/_hyphae$/, "_planks");
+  return "";
+}
+
+async function _craftIntermediatesFromLogs() {
+  const logs = _inventoryItems().filter((it) => {
+    const n = String(it.name || "");
+    return n.endsWith("_log") || n.endsWith("_wood") || n.endsWith("_stem") || n.endsWith("_hyphae");
+  });
+
+  let converted = 0;
+  for (const log of logs) {
+    const plankName = _logToPlankName(log.name);
+    const plankDef = mcData?.itemsByName?.[plankName];
+    if (!plankDef) continue;
+    try {
+      const recipes = bot.recipesFor(plankDef.id, null, 1, null) || [];
+      if (!recipes.length) continue;
+      // tenta converter o stack inteiro do tipo de tronco encontrado
+      const craftCount = Math.max(1, Number(log.count || 1));
+      await bot.craft(recipes[0], craftCount, null);
+      converted += craftCount;
+    } catch (_e) {
+      // ignora falha pontual e tenta os proximos tipos de tronco
+    }
+  }
+  return converted;
+}
+
+async function _craftIntermediatesSticks() {
+  const stickDef = mcData?.itemsByName?.stick;
+  if (!stickDef) return 0;
+  try {
+    const recipes = bot.recipesFor(stickDef.id, null, 1, null) || [];
+    if (!recipes.length) return 0;
+    // prepara um lote pequeno para receitas de ferramenta
+    await bot.craft(recipes[0], 4, null);
+    return 4;
+  } catch (_e) {
+    return 0;
+  }
+}
+
+async function _prepareBasicCraftIntermediates(targetName) {
+  const target = String(targetName || "");
+  let changed = 0;
+
+  const beforePlanks = _inventoryCountByPredicate((it) => String(it.name || "").endsWith("_planks"));
+  const beforeSticks = _inventoryCountByPredicate((it) => String(it.name || "") === "stick");
+
+  changed += await _craftIntermediatesFromLogs();
+
+  const needsSticks = [
+    "_pickaxe",
+    "_axe",
+    "_shovel",
+    "_sword",
+    "_hoe",
+    "fishing_rod",
+  ].some((x) => target.includes(x));
+
+  if (needsSticks || target === "crafting_table" || target === "furnace") {
+    changed += await _craftIntermediatesSticks();
+  }
+
+  const afterPlanks = _inventoryCountByPredicate((it) => String(it.name || "").endsWith("_planks"));
+  const afterSticks = _inventoryCountByPredicate((it) => String(it.name || "") === "stick");
+
+  const materialDelta = Math.max(0, (afterPlanks - beforePlanks)) + Math.max(0, (afterSticks - beforeSticks));
+  return changed + materialDelta;
+}
+
 function _findNearbyCraftingTable(maxDistance = 8) {
   const tableId = mcData?.blocksByName?.crafting_table?.id;
   if (!tableId || !bot?.findBlock) return null;
@@ -286,6 +372,17 @@ async function craftItem(rawItem, count = 1) {
   if (!recipes.length) {
     tableBlock = _findNearbyCraftingTable(8);
     if (tableBlock) recipes = bot.recipesFor(itemDef.id, null, qty, tableBlock) || [];
+  }
+
+  if (!recipes.length) {
+    // tenta preparar materiais intermediarios (ex.: tronco -> tabua -> graveto)
+    await _prepareBasicCraftIntermediates(itemName);
+
+    recipes = bot.recipesFor(itemDef.id, null, qty, null) || [];
+    if (!recipes.length) {
+      tableBlock = _findNearbyCraftingTable(8);
+      if (tableBlock) recipes = bot.recipesFor(itemDef.id, null, qty, tableBlock) || [];
+    }
   }
 
   if (!recipes.length) {
@@ -676,11 +773,11 @@ function buildMinecraftContext() {
       kind: e.name || e.type || "unknown",
       distance: _toFixed(p.distanceTo(e.position)),
     }))
-    .filter((e) => Number.isFinite(e.distance))
+    .filter((e) => Number.isFinite(e.distance) && e.distance <= MC_CONTEXT_MAX_ENTITY_DISTANCE)
     .sort((a, b) => a.distance - b.distance);
 
-  const playersNear = entities.filter((e) => e.type === "player").slice(0, 5);
-  const mobsNear = entities.filter((e) => e.type === "mob").slice(0, 8);
+  const playersNear = entities.filter((e) => e.type === "player").slice(0, MC_CONTEXT_MAX_PLAYERS);
+  const mobsNear = entities.filter((e) => e.type === "mob").slice(0, MC_CONTEXT_MAX_MOBS);
   const inv = _inventorySummary();
 
   let blockBelow = null;
@@ -692,6 +789,7 @@ function buildMinecraftContext() {
     `Posicao: x=${_toFixed(p.x)}, y=${_toFixed(p.y)}, z=${_toFixed(p.z)}. ` +
     `Vida=${bot.health ?? null}, Fome=${bot.food ?? null}. Bloco abaixo=${blockBelow || "desconhecido"}. ` +
     `Inventario: ${inv.summary}. ` +
+    `Raio de contexto=${MC_CONTEXT_MAX_ENTITY_DISTANCE} blocos. ` +
     `Jogadores proximos: ${playersNear.length ? playersNear.map((x) => `${x.name}(${x.distance}m)`).join(", ") : "nenhum"}. ` +
     `Mobs proximos: ${mobsNear.length ? mobsNear.map((x) => `${x.kind}(${x.distance}m)`).join(", ") : "nenhum"}.`;
 

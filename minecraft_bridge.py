@@ -50,7 +50,21 @@ class MinecraftBridge:
             json={"action": action, "payload": payload or {}},
             timeout=12,
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            detail = ""
+            try:
+                body = r.json()
+                if isinstance(body, dict):
+                    detail = str(body.get("error") or body)
+                else:
+                    detail = str(body)
+            except Exception:
+                detail = (r.text or "").strip()
+            msg = (
+                f"{r.status_code} Client Error em /action "
+                f"(action={action}, payload={payload or {}}): {detail}"
+            )
+            raise requests.HTTPError(msg, response=r)
         return r.json()
 
     def get_context(self):

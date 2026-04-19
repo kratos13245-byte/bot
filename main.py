@@ -1,6 +1,8 @@
 #nada
 import asyncio
 import os
+import queue
+import re
 import threading
 import time
 from contextlib import suppress
@@ -42,6 +44,7 @@ from memory import (
     salvar_nota,
 )
 from mood import ajustar_humor, carregar_humor, resetar_humor
+from procedure_memory import montar_contexto_procedural
 from tts import falar
 from twitch_bot import TWITCH_TRIGGER_MODE, TwitchChatBridge
 from vision_local import VisionWatcher
@@ -65,6 +68,8 @@ MC_NARRATION_INTERVAL_SEC = float(os.getenv("MC_NARRATION_INTERVAL_SEC", "5"))
 MC_NARRATION_COOLDOWN_SEC = float(os.getenv("MC_NARRATION_COOLDOWN_SEC", "28"))
 MC_NARRATION_TO_CHAT = os.getenv("MC_NARRATION_TO_CHAT", "1") == "1"
 MC_NARRATION_TO_TTS = os.getenv("MC_NARRATION_TO_TTS", "0") == "1"
+MC_CHAT_QUEUE_MAX = int(os.getenv("MC_CHAT_QUEUE_MAX", "150"))
+MC_LATEST_COMMAND_WINS = os.getenv("MC_LATEST_COMMAND_WINS", "1") == "1"
 ALLOWED_MC_ACTIONS = {
     "none",
     "follow_player",
@@ -104,6 +109,9 @@ mc = MinecraftBridge()
 mc_narracao_ativa = MC_NARRATION_ENABLED_DEFAULT
 mc_narracao_stop = threading.Event()
 mc_narracao_thread = None
+mc_chat_queue = queue.Queue(maxsize=max(10, MC_CHAT_QUEUE_MAX))
+mc_chat_worker_stop = threading.Event()
+mc_chat_worker_thread = None
 
 
 def mostrar_prompt():
@@ -123,6 +131,40 @@ def salvar_anotacoes(anotacoes):
         )
 
     print(f"[MEMORIA] {len(anotacoes)} anotacao(oes) salva(s).")
+
+
+def _is_minecraft_command_message(text: str) -> bool:
+    msg = (text or "").strip().lower()
+    if not msg:
+        return False
+    msg = re.sub(r"\s+", " ", msg)
+    patterns = [
+        r"^(?:ei\s+)?(?:iara|bot|ia)\b",
+        r"\b(?:siga|segue|acompanha|me siga)\b",
+        r"\b(?:pare|parar|stop)\b",
+        r"\b(?:explora|explorar|explore|aventura)\b",
+        r"\b(?:marcar base|voltar base|ir base)\b",
+        r"\b(?:mine|minera|minerar)\b",
+        r"\b(?:craft|faca|faz|cria|monta|construir)\b",
+        r"\b(?:largar|dropar|dropa|descarta|joga fora)\b",
+        r"\b(?:coloca|coloque|poe|põe|posiciona)\b",
+        r"\b(?:combate|loot|sobrevivencia)\b",
+    ]
+    return any(re.search(p, msg) for p in patterns)
+
+
+def _drain_mc_chat_queue() -> int:
+    removed = 0
+    while True:
+        try:
+            _ = mc_chat_queue.get_nowait()
+        except queue.Empty:
+            break
+        else:
+            removed += 1
+            with suppress(Exception):
+                mc_chat_queue.task_done()
+    return removed
 
 
 def _extrair_evento_minecraft(ctx: dict):
@@ -160,7 +202,17 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         contexto_resumo = ""
 
     try:
-        plano = planejar_acao_minecraft(entrada, contexto_minecraft=contexto_resumo, autor=autor)
+        contexto_procedural = montar_contexto_procedural(entrada, top_k=2)
+    except Exception:
+        contexto_procedural = ""
+
+    try:
+        plano = planejar_acao_minecraft(
+            entrada,
+            contexto_minecraft=contexto_resumo,
+            autor=autor,
+            contexto_procedural=contexto_procedural,
+        )
     except Exception as e:
         print(f"[MINECRAFT] Planner IA falhou: {e}")
         return None
@@ -258,6 +310,31 @@ def iniciar_narracao_minecraft():
             mc_narracao_stop.wait(MC_NARRATION_INTERVAL_SEC)
 
     thread = threading.Thread(target=runner, daemon=True, name="mc-narracao-thread")
+    thread.start()
+    return thread
+
+
+def iniciar_worker_chat_minecraft():
+    def runner():
+        while not mc_chat_worker_stop.is_set():
+            try:
+                user, text = mc_chat_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            try:
+                responder_personagem(
+                    text,
+                    origem="minecraft",
+                    autor=user,
+                    enviar_chat=mc.send_chat,
+                )
+            except Exception as e:
+                print(f"[MINECRAFT] Erro processando mensagem em worker: {e}")
+            finally:
+                mc_chat_queue.task_done()
+
+    thread = threading.Thread(target=runner, daemon=True, name="mc-chat-worker")
     thread.start()
     return thread
 
@@ -456,11 +533,16 @@ def iniciar_twitch_em_background():
 
 
 def encerrar_avatar():
-    global mc_narracao_thread
+    global mc_narracao_thread, mc_chat_worker_thread
     mc_narracao_stop.set()
     if mc_narracao_thread and mc_narracao_thread.is_alive():
         with suppress(Exception):
             mc_narracao_thread.join(timeout=2)
+
+    mc_chat_worker_stop.set()
+    if mc_chat_worker_thread and mc_chat_worker_thread.is_alive():
+        with suppress(Exception):
+            mc_chat_worker_thread.join(timeout=2)
 
     with suppress(Exception):
         mc.stop()
@@ -488,18 +570,29 @@ print("[TWITCH] Integracao com chat iniciada em background.")
 if mc.enabled:
     def _on_minecraft_chat(user: str, text: str):
         try:
-            responder_personagem(
-                text,
-                origem="minecraft",
-                autor=user,
-                enviar_chat=mc.send_chat,
-            )
+            if MC_LATEST_COMMAND_WINS and _is_minecraft_command_message(text):
+                removed = _drain_mc_chat_queue()
+                if removed:
+                    print(f"[MINECRAFT] Comando novo recebido, descartei {removed} mensagem(ns) pendente(s).")
+                with suppress(Exception):
+                    mc.send_action("stop", {})
+            mc_chat_queue.put_nowait((user, text))
+        except queue.Full:
+            # Evita travar o polling quando houver rajada de mensagens.
+            with suppress(Exception):
+                _ = mc_chat_queue.get_nowait()
+                mc_chat_queue.task_done()
+            with suppress(Exception):
+                mc_chat_queue.put_nowait((user, text))
+            print("[MINECRAFT] Fila cheia, descartando mensagem antiga para manter tempo real.")
         except Exception as e:
-            print(f"[MINECRAFT] Erro processando mensagem: {e}")
+            print(f"[MINECRAFT] Erro ao enfileirar mensagem: {e}")
 
     try:
         status = mc.health()
         print(f"[MINECRAFT] Bridge online: connected={status.get('connected')}")
+        mc_chat_worker_thread = iniciar_worker_chat_minecraft()
+        print(f"[MINECRAFT] Worker de chat iniciado (fila={MC_CHAT_QUEUE_MAX}).")
         mc.start_polling(_on_minecraft_chat)
         print("[MINECRAFT] Integracao com chat iniciada em background.")
         mc_narracao_thread = iniciar_narracao_minecraft()
