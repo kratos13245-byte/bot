@@ -24,7 +24,12 @@ def _load_local_env(env_path=".env"):
 
 _load_local_env()
 
-from ai import gerar_assunto, gerar_resposta
+from ai import (
+    gerar_assunto,
+    gerar_comentario_minecraft,
+    gerar_resposta,
+    planejar_acao_minecraft,
+)
 from avatar import AvatarController
 from hear import ouvir, ouvir_live_ate_texto
 from memory import (
@@ -54,6 +59,29 @@ COMANDO_DORMIR = "dormir"
 COMANDO_ACORDAR = "acordar"
 ALIASES_DORMIR = ["cala a boca iara"]
 ALIASES_ACORDAR = ["escuta aqui iara"]
+MC_AI_ACTION_PLANNER = os.getenv("MC_AI_ACTION_PLANNER", "1") == "1"
+MC_NARRATION_ENABLED_DEFAULT = os.getenv("MC_NARRATION_ENABLED", "1") == "1"
+MC_NARRATION_INTERVAL_SEC = float(os.getenv("MC_NARRATION_INTERVAL_SEC", "5"))
+MC_NARRATION_COOLDOWN_SEC = float(os.getenv("MC_NARRATION_COOLDOWN_SEC", "28"))
+MC_NARRATION_TO_CHAT = os.getenv("MC_NARRATION_TO_CHAT", "1") == "1"
+MC_NARRATION_TO_TTS = os.getenv("MC_NARRATION_TO_TTS", "0") == "1"
+ALLOWED_MC_ACTIONS = {
+    "none",
+    "follow_player",
+    "goto",
+    "explore",
+    "set_adventure",
+    "set_base_here",
+    "go_base",
+    "find_biome",
+    "find_resource",
+    "mine",
+    "craft_tool",
+    "set_combat",
+    "set_loot",
+    "set_survival",
+    "stop",
+}
 
 
 def inicializar_avatar():
@@ -71,6 +99,9 @@ def inicializar_avatar():
 avatar = inicializar_avatar()
 vision = VisionWatcher()
 mc = MinecraftBridge()
+mc_narracao_ativa = MC_NARRATION_ENABLED_DEFAULT
+mc_narracao_stop = threading.Event()
+mc_narracao_thread = None
 
 
 def mostrar_prompt():
@@ -90,6 +121,135 @@ def salvar_anotacoes(anotacoes):
         )
 
     print(f"[MEMORIA] {len(anotacoes)} anotacao(oes) salva(s).")
+
+
+def _extrair_evento_minecraft(ctx: dict):
+    data = ctx.get("data", {}) if isinstance(ctx, dict) else {}
+    health = data.get("health")
+    food = data.get("food")
+    mobs = data.get("mobs_near") or []
+    players = data.get("players_near") or []
+    mode = ((data.get("state") or {}).get("mode") or "").strip()
+
+    if isinstance(health, (int, float)) and health <= 7:
+        return "vida baixa"
+    if isinstance(food, (int, float)) and food <= 10:
+        return "fome baixa"
+    if mobs:
+        nome = str(mobs[0].get("kind") or mobs[0].get("name") or "mob")
+        return f"mob por perto ({nome})"
+    if players:
+        nome = str(players[0].get("name") or "jogador")
+        return f"jogador por perto ({nome})"
+    if mode in {"mine", "find_resource", "find_biome", "adventure", "explore"}:
+        return f"atividade atual: {mode}"
+    return ""
+
+
+def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None):
+    if not mc.enabled or not MC_AI_ACTION_PLANNER:
+        return None
+
+    try:
+        ctx = mc.get_context()
+        contexto_resumo = str(ctx.get("summary", "")).strip()
+    except Exception:
+        ctx = {}
+        contexto_resumo = ""
+
+    try:
+        plano = planejar_acao_minecraft(entrada, contexto_minecraft=contexto_resumo, autor=autor)
+    except Exception as e:
+        print(f"[MINECRAFT] Planner IA falhou: {e}")
+        return None
+
+    action = str(plano.get("action", "none")).strip().lower()
+    payload = plano.get("payload", {}) or {}
+    summary = str(plano.get("summary", "")).strip()
+
+    if action == "none":
+        return None
+    if action not in ALLOWED_MC_ACTIONS:
+        print(f"[MINECRAFT] Planner sugeriu acao invalida: {action}")
+        return None
+
+    try:
+        out = mc.send_action(action, payload)
+    except Exception as e:
+        print(f"[MINECRAFT] Falha ao executar acao planejada ({action}): {e}")
+        return None
+
+    feedback = summary or f"Acao executada: {action}."
+    if out.get("ok") and action == "craft_tool":
+        item = out.get("item")
+        crafted = out.get("crafted", out.get("requested", 1))
+        feedback = summary or f"Craft concluido: {item} x{crafted}."
+
+    print(f"[MINECRAFT PLANNER] {feedback} | action={action} payload={payload}")
+    if enviar_chat:
+        with suppress(Exception):
+            enviar_chat(feedback)
+
+    return {
+        "texto": feedback,
+        "emocao": "normal",
+        "humor": {"estado": "calma", "paciencia": 6, "delta": 0, "motivo": "planner"},
+    }
+
+
+def iniciar_narracao_minecraft():
+    def runner():
+        last_context_key = ""
+        last_comment_ts = 0.0
+        while not mc_narracao_stop.is_set():
+            if not mc_narracao_ativa or not mc.enabled:
+                mc_narracao_stop.wait(MC_NARRATION_INTERVAL_SEC)
+                continue
+
+            try:
+                ctx = mc.get_context()
+                resumo = str(ctx.get("summary", "")).strip()
+                evento = _extrair_evento_minecraft(ctx)
+            except Exception:
+                mc_narracao_stop.wait(MC_NARRATION_INTERVAL_SEC)
+                continue
+
+            if not resumo:
+                mc_narracao_stop.wait(MC_NARRATION_INTERVAL_SEC)
+                continue
+
+            key = f"{evento}|{resumo[:220]}"
+            now = time.time()
+            changed = key != last_context_key
+            ready = (now - last_comment_ts) >= MC_NARRATION_COOLDOWN_SEC
+
+            if changed and ready:
+                with process_lock:
+                    try:
+                        comentario = gerar_comentario_minecraft(resumo, evento=evento)
+                        texto = str(comentario.get("texto", "")).strip()
+                        emocao = comentario.get("emocao", "normal")
+                    except Exception as e:
+                        print(f"[MC NARRACAO] Falha na geracao: {e}")
+                        texto = ""
+                        emocao = "normal"
+
+                    if texto:
+                        print(f"[MC NARRACAO] {texto}")
+                        if MC_NARRATION_TO_CHAT:
+                            with suppress(Exception):
+                                mc.send_chat(texto)
+                        if MC_NARRATION_TO_TTS:
+                            with suppress(Exception):
+                                falar(texto, emocao=emocao, avatar=avatar)
+                        last_comment_ts = now
+                        last_context_key = key
+
+            mc_narracao_stop.wait(MC_NARRATION_INTERVAL_SEC)
+
+    thread = threading.Thread(target=runner, daemon=True, name="mc-narracao-thread")
+    thread.start()
+    return thread
 
 
 def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = "voce", enviar_chat=None):
@@ -112,6 +272,32 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
             historico_usuario = f"{autor}: {entrada}"
             print(f"\n[TWITCH] {autor} > {entrada}")
         elif origem == "minecraft":
+            try:
+                cmd_result = mc.try_handle_natural_command(autor, entrada)
+            except Exception as e:
+                cmd_result = {"handled": False}
+                print(f"[MINECRAFT] Falha ao interpretar comando: {e}")
+
+            if cmd_result.get("handled"):
+                resumo = str(cmd_result.get("summary", "Comando executado.")).strip()
+                print(f"[MINECRAFT ACTION] {resumo}")
+                if enviar_chat:
+                    try:
+                        enviar_chat(resumo)
+                    except Exception as e:
+                        print(f"[MINECRAFT] Falha ao enviar feedback de acao: {e}")
+
+                if os.getenv("MC_SKIP_AI_ON_COMMAND", "1") == "1":
+                    return {
+                        "texto": resumo,
+                        "emocao": "normal",
+                        "humor": {"estado": "calma", "paciencia": 6, "delta": 0, "motivo": "comando"},
+                    }
+            else:
+                planned = _tentar_acao_planejada_minecraft(autor, entrada, enviar_chat=enviar_chat)
+                if planned and os.getenv("MC_SKIP_AI_ON_COMMAND", "1") == "1":
+                    return planned
+
             prompt_ia = f'Mensagem no chat do Minecraft de "{autor}": {entrada}'
             historico_usuario = f"{autor}: {entrada}"
             print(f"\n[MINECRAFT] {autor} > {entrada}")
@@ -260,6 +446,12 @@ def iniciar_twitch_em_background():
 
 
 def encerrar_avatar():
+    global mc_narracao_thread
+    mc_narracao_stop.set()
+    if mc_narracao_thread and mc_narracao_thread.is_alive():
+        with suppress(Exception):
+            mc_narracao_thread.join(timeout=2)
+
     with suppress(Exception):
         mc.stop()
 
@@ -276,7 +468,7 @@ def encerrar_avatar():
 
 
 print("IA iniciada")
-print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao off | /visao status | /visao agora | /mc status | /mc cmd <comando> | /testeanim | /sair")
+print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao off | /visao status | /visao agora | /mc status | /mc cmd <comando> | /mc ai <ordem> | /mc narracao on|off | /testeanim | /sair")
 print(f"No /mic-live: diga '{COMANDO_DORMIR}' para pausar e '{COMANDO_ACORDAR}' para voltar.")
 print("Atalhos de voz: 'cala a boca iara' (pausa) e 'escuta aqui iara' (retoma).")
 
@@ -300,6 +492,8 @@ if mc.enabled:
         print(f"[MINECRAFT] Bridge online: connected={status.get('connected')}")
         mc.start_polling(_on_minecraft_chat)
         print("[MINECRAFT] Integracao com chat iniciada em background.")
+        mc_narracao_thread = iniciar_narracao_minecraft()
+        print(f"[MINECRAFT] Narracao automatica: {'on' if mc_narracao_ativa else 'off'}")
     except Exception as e:
         print(f"[MINECRAFT] Bridge indisponivel: {e}")
 
@@ -435,6 +629,23 @@ while True:
                     print(f"[MINECRAFT] Comando enviado: {cmd}")
                 except Exception as e:
                     print(f"[MINECRAFT] Falha ao enviar comando: {e}")
+                continue
+
+            if entrada.startswith("/mc ai "):
+                ordem = entrada[len("/mc ai "):].strip()
+                if not ordem:
+                    print("[MINECRAFT] Informe uma ordem apos /mc ai.")
+                    continue
+                resultado = _tentar_acao_planejada_minecraft("voce", ordem, enviar_chat=mc.send_chat)
+                if resultado:
+                    print(f"[MINECRAFT] {resultado['texto']}")
+                else:
+                    print("[MINECRAFT] Planner nao identificou acao clara.")
+                continue
+
+            if entrada in {"/mc narracao on", "/mc narracao off"}:
+                mc_narracao_ativa = entrada.endswith("on")
+                print(f"[MINECRAFT] Narracao {'ativada' if mc_narracao_ativa else 'desativada'}.")
                 continue
 
             if entrada == "/visao off":

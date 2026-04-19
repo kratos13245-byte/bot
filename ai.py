@@ -257,23 +257,25 @@ def _montar_mensagens_base(prompt_usuario: str):
     return mensagens
 
 
-def gerar_resposta(prompt_usuario: str) -> dict:
-    mensagens = _montar_mensagens_base(prompt_usuario)
-    _log_prompt_debug(mensagens, tag="gerar_resposta")
-
+def _chat_completion_content(mensagens, *, temperature=0.85, max_tokens=320, timeout=120):
     payload = {
         "model": os.getenv("AI_MODEL", "local-model"),
         "messages": mensagens,
-        "temperature": 0.85,
+        "temperature": temperature,
         "top_p": 0.95,
-        "max_tokens": 320,
+        "max_tokens": max_tokens,
         "repeat_penalty": 1.12,
     }
-
-    resposta = requests.post(_resolver_url_api(), json=payload, timeout=120)
+    resposta = requests.post(_resolver_url_api(), json=payload, timeout=timeout)
     resposta.raise_for_status()
     dados = resposta.json()
-    conteudo = dados["choices"][0]["message"]["content"].strip()
+    return dados["choices"][0]["message"]["content"].strip()
+
+
+def gerar_resposta(prompt_usuario: str) -> dict:
+    mensagens = _montar_mensagens_base(prompt_usuario)
+    _log_prompt_debug(mensagens, tag="gerar_resposta")
+    conteudo = _chat_completion_content(mensagens, temperature=0.85, max_tokens=320, timeout=120)
     resultado = extrair_json_seguro(conteudo)
 
     if resultado is not None:
@@ -330,18 +332,7 @@ Formato:
 
     _log_prompt_debug(mensagens, tag="gerar_assunto")
 
-    payload = {
-        "model": os.getenv("AI_MODEL", "local-model"),
-        "messages": mensagens,
-        "temperature": 0.95,
-        "top_p": 0.95,
-        "max_tokens": 120,
-    }
-
-    resposta = requests.post(_resolver_url_api(), json=payload, timeout=120)
-    resposta.raise_for_status()
-    dados = resposta.json()
-    conteudo = dados["choices"][0]["message"]["content"].strip()
+    conteudo = _chat_completion_content(mensagens, temperature=0.95, max_tokens=120, timeout=120)
     resultado = extrair_json_seguro(conteudo)
 
     if resultado is not None:
@@ -354,3 +345,86 @@ Formato:
         "emocao": EMOCAO_PADRAO,
         "anotacoes": [],
     }
+
+
+def planejar_acao_minecraft(texto_usuario: str, contexto_minecraft: str = "", autor: str = "usuario") -> dict:
+    prompt = f"""
+Voce e um planejador de acoes para bot no Minecraft.
+Entrada do jogador "{autor}": {texto_usuario}
+Contexto atual:
+{contexto_minecraft or "(sem contexto)"}
+
+Apenas escolha acao se houver um pedido claro de execucao agora.
+Se for conversa normal, resposta social, pergunta vaga, ou sem ordem clara: retorne acao "none".
+
+Acoes permitidas:
+- none
+- follow_player payload: {{"player":"nick"}}
+- goto payload: {{"x":int,"y":int,"z":int,"range":2}}
+- explore payload: {{"enabled":true|false}}
+- set_adventure payload: {{"enabled":true|false}}
+- set_base_here payload: {{}}
+- go_base payload: {{}}
+- find_biome payload: {{"biome":"nome","resource":"opcional"}}
+- find_resource payload: {{"resource":"nome"}}
+- mine payload: {{"resource":"nome","count":int}}
+- craft_tool payload: {{"item":"nome","count":int}}
+- set_combat payload: {{"enabled":true|false}}
+- set_loot payload: {{"enabled":true|false}}
+- set_survival payload: {{"enabled":true|false}}
+- stop payload: {{}}
+
+Responda SOMENTE JSON valido:
+{{
+  "action":"none",
+  "payload":{{}},
+  "summary":"frase curta para feedback"
+}}
+"""
+    mensagens = [
+        {"role": "system", "content": "Responda estritamente em JSON valido."},
+        {"role": "user", "content": prompt.strip()},
+    ]
+    _log_prompt_debug(mensagens, tag="planejar_acao_minecraft")
+
+    conteudo = _chat_completion_content(mensagens, temperature=0.2, max_tokens=180, timeout=60)
+    data = extrair_json_seguro(conteudo) or {}
+    action = str(data.get("action", "none")).strip().lower() or "none"
+    payload = data.get("payload", {})
+    summary = str(data.get("summary", "")).strip()
+    if not isinstance(payload, dict):
+        payload = {}
+    return {"action": action, "payload": payload, "summary": summary}
+
+
+def gerar_comentario_minecraft(contexto_minecraft: str, evento: str = "") -> dict:
+    prompt = f"""
+Gere um comentario curto e natural sobre a situacao atual no Minecraft.
+Contexto: {contexto_minecraft or "(sem contexto)"}
+Evento relevante detectado: {evento or "(nenhum especifico)"}
+
+Regras:
+- No maximo 1 frase curta.
+- Sem listar numeros desnecessarios.
+- Tom de live, divertido e espontaneo.
+- Se nao houver nada interessante, retorne texto vazio.
+
+Formato JSON obrigatorio:
+{{
+  "texto":"...",
+  "emocao":"normal"
+}}
+"""
+    mensagens = [
+        {"role": "system", "content": PERSONALIDADE},
+        {"role": "system", "content": _instrucao_palavroes()},
+        {"role": "system", "content": obter_contexto_humor()},
+        {"role": "user", "content": prompt.strip()},
+    ]
+    _log_prompt_debug(mensagens, tag="gerar_comentario_minecraft")
+
+    conteudo = _chat_completion_content(mensagens, temperature=0.7, max_tokens=80, timeout=45)
+    data = extrair_json_seguro(conteudo) or {}
+    texto = str(data.get("texto", "")).strip()
+    emocao = validar_emocao(data.get("emocao", EMOCAO_PADRAO))
+    return {"texto": texto, "emocao": emocao}

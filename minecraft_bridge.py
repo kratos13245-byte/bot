@@ -1,6 +1,8 @@
 import os
+import re
 import threading
 import time
+import unicodedata
 from typing import Callable, Optional
 
 import requests
@@ -38,6 +40,18 @@ class MinecraftBridge:
             return
         r = requests.post(f"{self.base_url}/command", json={"command": command}, timeout=10)
         r.raise_for_status()
+
+    def send_action(self, action: str, payload: Optional[dict] = None):
+        action = (action or "").strip()
+        if not action:
+            return {"ok": False, "error": "action vazia"}
+        r = requests.post(
+            f"{self.base_url}/action",
+            json={"action": action, "payload": payload or {}},
+            timeout=12,
+        )
+        r.raise_for_status()
+        return r.json()
 
     def get_context(self):
         r = requests.get(f"{self.base_url}/context", timeout=8)
@@ -93,3 +107,262 @@ class MinecraftBridge:
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
+
+    def _normalize(self, text: str) -> str:
+        text = str(text or "").lower().strip()
+        text = unicodedata.normalize("NFD", text)
+        text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+        text = re.sub(r"[^\w\s\-]", " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text
+
+    def _contains_any(self, text: str, terms: list[str]) -> bool:
+        return any(term in text for term in terms)
+
+    def _strip_bot_invocation(self, text: str) -> str:
+        text = text.strip()
+        # Aceita chamadas como "iara, ...", "bot ...", "ei iara ..."
+        text = re.sub(
+            r"^(?:ei\s+)?(?:iara|bot|ia)\s*[:,\-]?\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return text.strip()
+
+    def _extract_follow_target(self, raw: str):
+        patterns = [
+            r"(?:siga|segue|acompanha|acompanhe)\s+(?:o|a)?\s*([a-zA-Z0-9_]{3,20})",
+            r"(?:vai\s+atras\s+de|gruda\s+em)\s+(?:o|a)?\s*([a-zA-Z0-9_]{3,20})",
+        ]
+        for p in patterns:
+            m = re.search(p, raw, flags=re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+        return None
+
+    def _extract_coordinates(self, msg: str):
+        # Formatos: "x 100 y 64 z -30" ou "100 64 -30"
+        labeled = re.search(
+            r"x\s*(-?\d+)\s*y\s*(-?\d+)\s*z\s*(-?\d+)",
+            msg,
+            flags=re.IGNORECASE,
+        )
+        if labeled:
+            return int(labeled.group(1)), int(labeled.group(2)), int(labeled.group(3))
+
+        generic = re.search(
+            r"(?:ir|vai|va|v|teleporta|andar|anda)\s*(?:para|pra|ate)?\s*(-?\d+)\s+(-?\d+)\s+(-?\d+)",
+            msg,
+            flags=re.IGNORECASE,
+        )
+        if generic:
+            return int(generic.group(1)), int(generic.group(2)), int(generic.group(3))
+        return None
+
+    def try_handle_natural_command(self, author: str, text: str):
+        raw = (text or "").strip()
+        if not raw:
+            return {"handled": False}
+
+        raw = self._strip_bot_invocation(raw)
+        msg = self._normalize(raw)
+
+        if msg in {"pare", "parar", "stop", "quieta", "fica quieta", "fica de boa", "espera ai"}:
+            self.send_action("stop", {})
+            return {"handled": True, "summary": "Parei tudo no Minecraft."}
+
+        if self._contains_any(
+            msg,
+            [
+                "siga-me",
+                "siga me",
+                "me siga",
+                "me acompanha",
+                "me acompanhe",
+                "cola em mim",
+                "vem comigo",
+                "gruda em mim",
+            ],
+        ):
+            self.send_action("follow_player", {"player": author})
+            return {"handled": True, "summary": f"Vou seguir {author}."}
+
+        target = self._extract_follow_target(raw)
+        if target:
+            self.send_action("follow_player", {"player": target})
+            return {"handled": True, "summary": f"Vou seguir {target}."}
+
+        coords = self._extract_coordinates(msg)
+        if coords:
+            x, y, z = coords
+            self.send_action("goto", {"x": x, "y": y, "z": z, "range": 2})
+            return {"handled": True, "summary": f"Indo para {x} {y} {z}."}
+
+        if self._contains_any(
+            msg,
+            [
+                "explore",
+                "explorar",
+                "vai explorando",
+                "explora ai",
+                "explora por ai",
+                "anda por ai",
+                "vai andando",
+                "roda o mapa",
+                "vagueia",
+            ],
+        ):
+            self.send_action("explore", {"enabled": True})
+            return {"handled": True, "summary": "Ativei exploracao autonoma."}
+
+        if self._contains_any(
+            msg,
+            [
+                "modo aventura",
+                "aventura on",
+                "ativa aventura",
+                "ligar aventura",
+                "fica autonoma",
+                "vai se virar",
+            ],
+        ):
+            if "off" in msg or "desativa" in msg or "desliga" in msg:
+                self.send_action("set_adventure", {"enabled": False})
+                return {"handled": True, "summary": "Modo aventura desativado."}
+            self.send_action("set_adventure", {"enabled": True})
+            return {"handled": True, "summary": "Modo aventura ativado."}
+
+        if self._contains_any(
+            msg,
+            [
+                "marcar base",
+                "marca base",
+                "seta base",
+                "define base",
+                "salva base",
+            ],
+        ):
+            self.send_action("set_base_here", {})
+            return {"handled": True, "summary": "Base marcada neste ponto."}
+
+        if self._contains_any(
+            msg,
+            [
+                "inventario",
+                "inv",
+                "mochila",
+                "itens",
+                "mostra inventario",
+            ],
+        ):
+            out = self.send_action("inventory_summary", {})
+            resumo = str(out.get("summary", "")).strip() or "Nao consegui ler o inventario agora."
+            return {"handled": True, "summary": f"Inventario: {resumo}"}
+
+        if self._contains_any(
+            msg,
+            [
+                "voltar base",
+                "volta pra base",
+                "volta para base",
+                "ir base",
+                "vai pra base",
+                "retorna base",
+            ],
+        ):
+            self.send_action("go_base", {})
+            return {"handled": True, "summary": "Voltando para a base."}
+
+        m = re.search(
+            r"(?:craft|faca|faz|cria|monta|construi|construir)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
+            msg,
+        )
+        if m:
+            item = (m.group(1) or "").strip()
+            count = int(m.group(2) or "1")
+            out = self.send_action("craft_tool", {"item": item, "count": count})
+            if out.get("ok"):
+                crafted = int(out.get("crafted", out.get("requested", count)))
+                return {"handled": True, "summary": f"Craft concluido: {out.get('item', item)} x{crafted}."}
+            err = str(out.get("error", "erro desconhecido")).strip()
+            return {"handled": True, "summary": f"Nao consegui craftar agora: {err}"}
+
+        if self._contains_any(
+            msg,
+            [
+                "para de explorar",
+                "pare de explorar",
+                "para exploracao",
+                "pare exploracao",
+                "deixa de explorar",
+                "fica parado",
+                "nao explora",
+            ],
+        ):
+            self.send_action("explore", {"enabled": False})
+            return {"handled": True, "summary": "Parei a exploracao autonoma."}
+
+        m = re.search(
+            r"(?:va ate|vai ate|v ate|procura|busca).*(?:bioma)\s+([a-z0-9_\-\s]+?)(?:\s+e\s+(?:procura|busca)\s+([a-z0-9_\-\s]+))?$",
+            msg,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            biome = (m.group(1) or "").strip()
+            resource = (m.group(2) or "").strip()
+            self.send_action("find_biome", {"biome": biome, "resource": resource})
+            if resource:
+                return {"handled": True, "summary": f"Vou ate o bioma {biome} e procuro {resource}."}
+            return {"handled": True, "summary": f"Vou procurar o bioma {biome}."}
+
+        m = re.search(r"(?:vai|va|ir)\s+(?:pro|para o|para)\s+bioma\s+([a-z0-9_\-\s]+)$", msg)
+        if m:
+            biome = (m.group(1) or "").strip()
+            self.send_action("find_biome", {"biome": biome, "resource": ""})
+            return {"handled": True, "summary": f"Vou procurar o bioma {biome}."}
+
+        m = re.search(r"(?:procura|busca|acha|encontra)\s+(?:por\s+)?([a-z0-9_\-\s]+)$", msg, flags=re.IGNORECASE)
+        if m:
+            resource = (m.group(1) or "").strip()
+            self.send_action("find_resource", {"resource": resource})
+            return {"handled": True, "summary": f"Vou procurar {resource} por perto."}
+
+        m = re.search(
+            r"(?:mine|minera|minerar|quebra|coleta)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
+            msg,
+        )
+        if m:
+            resource = (m.group(1) or "").strip()
+            count = int(m.group(2) or "1")
+            self.send_action("mine", {"resource": resource, "count": count})
+            return {"handled": True, "summary": f"Vou minerar {resource} x{count}."}
+
+        if self._contains_any(
+            msg,
+            ["combate on", "ativar combate", "liga combate", "combate ligado", "auto combate on"],
+        ):
+            self.send_action("set_combat", {"enabled": True})
+            return {"handled": True, "summary": "Combate automatico ativado."}
+        if self._contains_any(
+            msg,
+            ["combate off", "desativar combate", "desliga combate", "combate desligado", "auto combate off"],
+        ):
+            self.send_action("set_combat", {"enabled": False})
+            return {"handled": True, "summary": "Combate automatico desativado."}
+
+        if self._contains_any(msg, ["loot on", "ativar loot", "liga loot", "loot ligado"]):
+            self.send_action("set_loot", {"enabled": True})
+            return {"handled": True, "summary": "Loot automatico ativado."}
+        if self._contains_any(msg, ["loot off", "desativar loot", "desliga loot", "loot desligado"]):
+            self.send_action("set_loot", {"enabled": False})
+            return {"handled": True, "summary": "Loot automatico desativado."}
+
+        if self._contains_any(msg, ["sobrevivencia on", "ativar sobrevivencia", "liga sobrevivencia"]):
+            self.send_action("set_survival", {"enabled": True})
+            return {"handled": True, "summary": "Modo sobrevivencia ativado."}
+        if self._contains_any(msg, ["sobrevivencia off", "desativar sobrevivencia", "desliga sobrevivencia"]):
+            self.send_action("set_survival", {"enabled": False})
+            return {"handled": True, "summary": "Modo sobrevivencia desativado."}
+
+        return {"handled": False}
