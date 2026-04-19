@@ -148,6 +148,11 @@ function _findItemByNameIncludes(candidates) {
   return null;
 }
 
+function _findItemsByNameIncludes(candidates) {
+  const items = _inventoryItems();
+  return items.filter((it) => candidates.some((c) => normalizeText(it.name).includes(normalizeText(c))));
+}
+
 function _countItemsByNameIncludes(candidates) {
   const items = _inventoryItems();
   const normalized = candidates.map((c) => normalizeText(c));
@@ -214,7 +219,8 @@ async function _equipToolForResource(resource) {
 }
 
 function _resolveCraftTarget(rawName) {
-  const t = normalizeText(rawName || "");
+  let t = normalizeText(rawName || "");
+  t = t.replace(/^(?:um|uma|uns|umas|o|a|os|as)\s+/, "").trim();
   if (!t) return null;
 
   const aliases = {
@@ -247,6 +253,10 @@ function _resolveCraftTarget(rawName) {
     "mesa de trabalho": "crafting_table",
     "mesa de craft": "crafting_table",
     "crafting table": "crafting_table",
+    "crafting_table": "crafting_table",
+    "craftingtable": "crafting_table",
+    "bancada": "crafting_table",
+    "mesa": "crafting_table",
     "fornalha": "furnace",
   };
 
@@ -291,6 +301,28 @@ async function craftItem(rawItem, count = 1) {
     return { ok: true, action: "craft", item: itemName, requested: qty, crafted };
   } catch (e) {
     return { ok: false, error: `falha no craft: ${e.message}` };
+  }
+}
+
+async function dropItem(rawItem, count = 1) {
+  if (!bot || !connected || !mcData) return { ok: false, error: "bot offline" };
+  let query = normalizeText(rawItem || "");
+  query = query.replace(/^(?:um|uma|uns|umas|o|a|os|as)\s+/, "").trim();
+  if (!query) return { ok: false, error: "item vazio" };
+
+  const itemName = _resolveCraftTarget(query) || query;
+  const matched = _findItemsByNameIncludes([itemName, query]);
+  if (!matched.length) return { ok: false, error: `item nao encontrado no inventario: ${query}` };
+
+  const qtyRequested = Math.max(1, Number(count) || 1);
+  const target = matched.sort((a, b) => (b.count || 0) - (a.count || 0))[0];
+  const qty = Math.min(qtyRequested, Number(target.count || 1));
+  try {
+    await bot.toss(target.type, null, qty);
+    pushEvent("drop_done", { item: target.name, requested: qtyRequested, dropped: qty });
+    return { ok: true, action: "drop_item", item: target.name, requested: qtyRequested, dropped: qty };
+  } catch (e) {
+    return { ok: false, error: `falha ao largar item: ${e.message}` };
   }
 }
 
@@ -803,6 +835,18 @@ function maybeHandleIngameCommand(username, rawMessage) {
       .catch((e) => bot.chat(`Erro no craft: ${e.message}`));
     return;
   }
+  const dropCmd = msg.match(/^(?:largar|larga|dropa|dropar|joga fora|descarta)\s+([a-z0-9_\-\s]+?)(?:\s+(\d+))?$/i);
+  if (dropCmd) {
+    const item = (dropCmd[1] || "").trim();
+    const count = Number(dropCmd[2] || "1");
+    dropItem(item, count)
+      .then((out) => {
+        if (out.ok) bot.chat(`Larguei ${out.item} x${out.dropped}.`);
+        else bot.chat(`Nao consegui largar: ${out.error}`);
+      })
+      .catch((e) => bot.chat(`Erro ao largar item: ${e.message}`));
+    return;
+  }
   const mineCmd = msg.match(/^mine\s+([a-z0-9_\-\s]+?)(?:\s+(\d+))?$/i);
   if (mineCmd) {
     const resource = (mineCmd[1] || "").trim();
@@ -938,6 +982,9 @@ app.post("/action", async (req, res) => {
       break;
     case "craft_tool":
       out = await craftItem(String(payload.item || ""), Number(payload.count || 1));
+      break;
+    case "drop_item":
+      out = await dropItem(String(payload.item || ""), Number(payload.count || 1));
       break;
     case "stop":
       out = stopAll();

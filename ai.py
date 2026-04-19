@@ -369,6 +369,7 @@ Acoes permitidas:
 - find_resource payload: {{"resource":"nome"}}
 - mine payload: {{"resource":"nome","count":int}}
 - craft_tool payload: {{"item":"nome","count":int}}
+- drop_item payload: {{"item":"nome","count":int}}
 - set_combat payload: {{"enabled":true|false}}
 - set_loot payload: {{"enabled":true|false}}
 - set_survival payload: {{"enabled":true|false}}

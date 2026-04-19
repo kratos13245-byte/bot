@@ -160,6 +160,11 @@ class MinecraftBridge:
             return int(generic.group(1)), int(generic.group(2)), int(generic.group(3))
         return None
 
+    def _sanitize_item_query(self, text: str) -> str:
+        q = self._normalize(text)
+        q = re.sub(r"^(?:um|uma|uns|umas|o|a|os|as)\s+", "", q).strip()
+        return q
+
     def try_handle_natural_command(self, author: str, text: str):
         raw = (text or "").strip()
         if not raw:
@@ -279,7 +284,7 @@ class MinecraftBridge:
             msg,
         )
         if m:
-            item = (m.group(1) or "").strip()
+            item = self._sanitize_item_query(m.group(1) or "")
             count = int(m.group(2) or "1")
             out = self.send_action("craft_tool", {"item": item, "count": count})
             if out.get("ok"):
@@ -287,6 +292,20 @@ class MinecraftBridge:
                 return {"handled": True, "summary": f"Craft concluido: {out.get('item', item)} x{crafted}."}
             err = str(out.get("error", "erro desconhecido")).strip()
             return {"handled": True, "summary": f"Nao consegui craftar agora: {err}"}
+
+        m = re.search(
+            r"(?:largar|larga|dropar|dropa|joga fora|descarta)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
+            msg,
+        )
+        if m:
+            item = self._sanitize_item_query(m.group(1) or "")
+            count = int(m.group(2) or "1")
+            out = self.send_action("drop_item", {"item": item, "count": count})
+            if out.get("ok"):
+                dropped = int(out.get("dropped", out.get("requested", count)))
+                return {"handled": True, "summary": f"Larguei {out.get('item', item)} x{dropped}."}
+            err = str(out.get("error", "erro desconhecido")).strip()
+            return {"handled": True, "summary": f"Nao consegui largar item: {err}"}
 
         if self._contains_any(
             msg,

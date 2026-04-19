@@ -77,6 +77,7 @@ ALLOWED_MC_ACTIONS = {
     "find_resource",
     "mine",
     "craft_tool",
+    "drop_item",
     "set_combat",
     "set_loot",
     "set_survival",
@@ -184,6 +185,10 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         item = out.get("item")
         crafted = out.get("crafted", out.get("requested", 1))
         feedback = summary or f"Craft concluido: {item} x{crafted}."
+    if out.get("ok") and action == "drop_item":
+        item = out.get("item")
+        dropped = out.get("dropped", out.get("requested", 1))
+        feedback = summary or f"Larguei {item} x{dropped}."
 
     print(f"[MINECRAFT PLANNER] {feedback} | action={action} payload={payload}")
     if enviar_chat:
