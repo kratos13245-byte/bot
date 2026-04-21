@@ -334,6 +334,14 @@ class ObsidianMemory:
             tokens = set(re.findall(r"[a-z0-9_]{2,}", low))
 
             action_keys = list((self._state.get("actions") or {}).keys())
+            blocked_actions = {
+                "planner_invalid",
+                "planner_error",
+                "command_error",
+                "negotiation",
+                "command_parser",
+            }
+            action_keys_effective = [a for a in action_keys if a not in blocked_actions]
             matched_actions = [a for a in action_keys if a in low]
             alias_to_action = {
                 "craft": "craft_tool",
@@ -357,20 +365,33 @@ class ObsidianMemory:
                 if mapped and mapped not in matched_actions:
                     matched_actions.append(mapped)
 
-            matched_actions = [a for a in matched_actions if a in (self._state.get("actions") or {})]
+            matched_actions = [a for a in matched_actions if a in (self._state.get("actions") or {}) and a not in blocked_actions]
 
             procedure_keys = list((self._state.get("procedures") or {}).keys())
             matched_procedures = [p for p in procedure_keys if p in low]
 
-            if not matched_actions and action_keys:
-                # fallback: aplica no ultimo action mais recente conhecido
-                latest = sorted(
-                    action_keys,
-                    key=lambda a: str((self._state.get("actions", {}).get(a, {}) or {}).get("last_summary", "")),
-                    reverse=True,
-                )
-                if latest:
-                    matched_actions = [latest[0]]
+            if not matched_actions and action_keys_effective:
+                # fallback: prioriza ultima acao com status de sucesso, ignorando acoes tecnicas de erro
+                successful = []
+                for a in action_keys_effective:
+                    astate = (self._state.get("actions", {}).get(a, {}) or {})
+                    if str(astate.get("last_status", "")).strip() in {"planner_ok", "command_ok"}:
+                        successful.append(a)
+                if successful:
+                    successful = sorted(
+                        successful,
+                        key=lambda a: str((self._state.get("actions", {}).get(a, {}) or {}).get("last_summary", "")),
+                        reverse=True,
+                    )
+                    matched_actions = [successful[0]]
+                else:
+                    latest = sorted(
+                        action_keys_effective,
+                        key=lambda a: str((self._state.get("actions", {}).get(a, {}) or {}).get("last_summary", "")),
+                        reverse=True,
+                    )
+                    if latest:
+                        matched_actions = [latest[0]]
 
             for action in matched_actions:
                 astate = self._state["actions"].setdefault(

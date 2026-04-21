@@ -75,6 +75,7 @@ const state = {
   lastMode: "idle",
   modeSinceTs: 0,
   searchMisses: 0,
+  mineMisses: 0,
   lastStockCheckTs: 0,
   stockInProgress: false,
 };
@@ -125,6 +126,7 @@ function _setModeIdle() {
   state.biomeTarget = "";
   state.resourceTarget = "";
   state.searchMisses = 0;
+  state.mineMisses = 0;
   state.miningTarget = "";
   state.miningRemaining = 0;
   state.miningInProgress = false;
@@ -1119,6 +1121,7 @@ function startMining(resource, count = 1) {
   state.miningTarget = r;
   state.miningRemaining = Math.floor(n);
   state.miningInProgress = false;
+  state.mineMisses = 0;
   state.followTarget = "";
   state.goto = null;
   state.biomeTarget = "";
@@ -1341,12 +1344,27 @@ async function runAutonomyTick() {
 
     const pos = _findResourceBlock(state.miningTarget);
     if (!pos) {
+      state.mineMisses += 1;
       const p = bot.entity.position;
-      const tx = p.x + (Math.random() * 20 - 10);
-      const tz = p.z + (Math.random() * 20 - 10);
-      _setGoalStable(new goals.GoalNear(tx, p.y, tz, 2), `mine_roam:${Math.round(tx)}:${Math.round(p.y)}:${Math.round(tz)}`, false);
+      const isWood = normalizeText(state.miningTarget).includes("log") || normalizeText(state.miningTarget).includes("wood");
+      const roam = isWood ? Math.max(30, MC_SEARCH_ROAM_RADIUS * 2) : 16;
+      const tx = p.x + (Math.random() * roam * 2 - roam);
+      const tz = p.z + (Math.random() * roam * 2 - roam);
+      _setGoalStable(new goals.GoalNear(tx, p.y, tz, 3), `mine_roam:${Math.round(tx)}:${Math.round(p.y)}:${Math.round(tz)}`, false);
+
+      if (state.mineMisses > 14 && isWood) {
+        pushEvent("mine_timeout", { target: state.miningTarget, misses: state.mineMisses, fallback: "explore" });
+        _setMode("explore");
+        return;
+      }
+      if (state.mineMisses > 20) {
+        pushEvent("mine_timeout", { target: state.miningTarget, misses: state.mineMisses, fallback: "idle" });
+        _setModeIdle();
+        return;
+      }
       return;
     }
+    state.mineMisses = 0;
 
     const block = bot.blockAt(pos);
     if (!block) return;
