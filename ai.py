@@ -412,6 +412,7 @@ Acoes permitidas:
 - find_biome payload: {{"biome":"nome","resource":"opcional"}}
 - find_resource payload: {{"resource":"nome"}}
 - mine payload: {{"resource":"nome","count":int}}
+- collect_for_item payload: {{"item":"nome","count":int}}
 - craft_tool payload: {{"item":"nome","count":int}}
 - drop_item payload: {{"item":"nome","count":int}}
 - place_block payload: {{"item":"nome","count":int,"position":"front|here"}}

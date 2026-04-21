@@ -145,6 +145,21 @@ class MinecraftBridge:
         return text.strip()
 
     def _extract_follow_target(self, raw: str):
+        low = self._normalize(raw)
+        # Evita interpretar "para de seguir X" como comando de seguir.
+        if self._contains_any(
+            low,
+            [
+                "para de seguir",
+                "pare de seguir",
+                "deixa de seguir",
+                "nao siga",
+                "não siga",
+                "nao me siga",
+                "não me siga",
+            ],
+        ):
+            return None
         patterns = [
             r"(?:siga|segue|acompanha|acompanhe)\s+(?:o|a)?\s*([a-zA-Z0-9_]{3,20})",
             r"(?:vai\s+atras\s+de|gruda\s+em)\s+(?:o|a)?\s*([a-zA-Z0-9_]{3,20})",
@@ -195,6 +210,23 @@ class MinecraftBridge:
         if msg in {"pare", "parar", "stop", "quieta", "fica quieta", "fica de boa", "espera ai"}:
             self.send_action("stop", {})
             return {"handled": True, "summary": "Parei tudo no Minecraft."}
+
+        if self._contains_any(
+            msg,
+            [
+                "para de seguir",
+                "pare de seguir",
+                "deixa de seguir",
+                "nao me siga",
+                "não me siga",
+                "para de me seguir",
+                "pare de me seguir",
+                "me deixa",
+                "me larga",
+            ],
+        ):
+            self.send_action("stop", {})
+            return {"handled": True, "summary": "Beleza, parei de seguir."}
 
         if self._contains_any(
             msg,
@@ -299,7 +331,7 @@ class MinecraftBridge:
             return {"handled": True, "summary": "Voltando para a base."}
 
         m = re.search(
-            r"(?:craft|faca|faz|cria|monta|construi|construir)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
+            r"(?:craft|faca|faz|cria|monta|construi|construir|transforma|transformar|converter|converte)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
             msg,
         )
         if m:
@@ -403,6 +435,27 @@ class MinecraftBridge:
             count = int(m.group(2) or "1")
             self.send_action("mine", {"resource": resource, "count": count})
             return {"handled": True, "summary": f"Vou minerar {resource} x{count}."}
+
+        m = re.search(
+            r"(?:colet[ea]|junta|junte|farm|farma|pegue|pega)\s+(?:materiais|recursos)\s+(?:pra|para)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
+            msg,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            item = self._sanitize_item_query(m.group(1) or "")
+            count = int(m.group(2) or "1")
+            out = self.send_action("collect_for_item", {"item": item, "count": count})
+            if out.get("ok"):
+                if out.get("done"):
+                    return {"handled": True, "summary": f"Ja temos materiais para {out.get('item', item)}."}
+                nxt = str(out.get("next_resource", "material")).strip()
+                missing = int(out.get("missing", count))
+                return {
+                    "handled": True,
+                    "summary": f"Fechou. Vou coletar {nxt} x{missing} para fazer {out.get('item', item)}.",
+                }
+            err = str(out.get("error", "erro desconhecido")).strip()
+            return {"handled": True, "summary": f"Nao consegui iniciar coleta de materiais: {err}"}
 
         if self._contains_any(
             msg,

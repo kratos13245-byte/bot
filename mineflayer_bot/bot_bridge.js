@@ -34,6 +34,13 @@ const MC_CONTEXT_MAX_ENTITY_DISTANCE = Number(process.env.MC_CONTEXT_MAX_ENTITY_
 const MC_CONTEXT_MAX_PLAYERS = Number(process.env.MC_CONTEXT_MAX_PLAYERS || (PERF_MODE ? "3" : "4"));
 const MC_CONTEXT_MAX_MOBS = Number(process.env.MC_CONTEXT_MAX_MOBS || (PERF_MODE ? "4" : "6"));
 const MC_INTERACT_MAX_DISTANCE = Number(process.env.MC_INTERACT_MAX_DISTANCE || (PERF_MODE ? "10" : "12"));
+const MC_STOCK_AUTOFILL = String(process.env.MC_STOCK_AUTOFILL || "1") === "1";
+const MC_STOCK_CHECK_MS = Number(process.env.MC_STOCK_CHECK_MS || "15000");
+const MC_STOCK_MIN_LOGS = Number(process.env.MC_STOCK_MIN_LOGS || "4");
+const MC_STOCK_MIN_PLANKS = Number(process.env.MC_STOCK_MIN_PLANKS || "12");
+const MC_STOCK_MIN_STICKS = Number(process.env.MC_STOCK_MIN_STICKS || "6");
+const MC_STOCK_MIN_COBBLE = Number(process.env.MC_STOCK_MIN_COBBLE || "16");
+const MC_STOCK_MIN_FOOD = Number(process.env.MC_STOCK_MIN_FOOD || "4");
 
 const events = [];
 let eventId = 0;
@@ -63,6 +70,8 @@ const state = {
   stuckTicks: 0,
   basePosition: null,
   lastGoalKey: "",
+  lastStockCheckTs: 0,
+  stockInProgress: false,
 };
 
 function pushEvent(type, payload) {
@@ -183,6 +192,22 @@ function _countItemsByNameIncludes(candidates) {
     .reduce((acc, it) => acc + (it.count || 0), 0);
 }
 
+function _countFoodAny() {
+  const foodCandidates = [
+    "cooked_beef",
+    "steak",
+    "cooked_porkchop",
+    "cooked_mutton",
+    "cooked_chicken",
+    "baked_potato",
+    "bread",
+    "carrot",
+    "potato",
+    "beetroot",
+  ];
+  return _countItemsByNameIncludes(foodCandidates);
+}
+
 function _inventorySummary(maxItems = MC_CONTEXT_INV_MAX_ITEMS) {
   const items = _inventoryItems();
   const grouped = new Map();
@@ -280,11 +305,127 @@ function _resolveCraftTarget(rawName) {
     "bancada": "crafting_table",
     "mesa": "crafting_table",
     "fornalha": "furnace",
+    "tabua": "__any_planks__",
+    "tabuas": "__any_planks__",
+    "tábua": "__any_planks__",
+    "tábuas": "__any_planks__",
+    "plank": "__any_planks__",
+    "planks": "__any_planks__",
+    "tabua de madeira": "__any_planks__",
+    "tabuas de madeira": "__any_planks__",
+    "tábua de madeira": "__any_planks__",
+    "tábuas de madeira": "__any_planks__",
   };
 
   if (aliases[t]) return aliases[t];
   if (mcData?.itemsByName?.[t]) return t;
   return null;
+}
+
+function _countLogsAny() {
+  return _inventoryCountByPredicate((it) => {
+    const n = String(it?.name || "");
+    return n.endsWith("_log") || n.endsWith("_wood") || n.endsWith("_stem") || n.endsWith("_hyphae");
+  });
+}
+
+function _countCobbleAny() {
+  return _inventoryCountByPredicate((it) => {
+    const n = normalizeText(it?.name || "");
+    return n === "cobblestone" || n === "cobbled_deepslate";
+  });
+}
+
+function _countIronAny() {
+  return _inventoryCountByPredicate((it) => {
+    const n = normalizeText(it?.name || "");
+    return n === "iron_ingot" || n === "raw_iron" || n === "iron_ore" || n === "deepslate_iron_ore";
+  });
+}
+
+function _materialPlanForItem(rawItem, count = 1) {
+  const item = _resolveCraftTarget(rawItem) || normalizeText(rawItem || "");
+  const qty = Math.max(1, Number(count) || 1);
+  const recipes = {
+    crafting_table: [{ key: "log", need: 1 * qty, resource: "log" }],
+    furnace: [{ key: "cobblestone", need: 8 * qty, resource: "cobblestone" }],
+
+    wooden_pickaxe: [{ key: "log", need: 2 * qty, resource: "log" }],
+    stone_pickaxe: [{ key: "cobblestone", need: 3 * qty, resource: "cobblestone" }, { key: "log", need: 1 * qty, resource: "log" }],
+    iron_pickaxe: [{ key: "iron", need: 3 * qty, resource: "iron_ore" }, { key: "log", need: 1 * qty, resource: "log" }],
+
+    wooden_axe: [{ key: "log", need: 2 * qty, resource: "log" }],
+    stone_axe: [{ key: "cobblestone", need: 3 * qty, resource: "cobblestone" }, { key: "log", need: 1 * qty, resource: "log" }],
+    iron_axe: [{ key: "iron", need: 3 * qty, resource: "iron_ore" }, { key: "log", need: 1 * qty, resource: "log" }],
+
+    wooden_shovel: [{ key: "log", need: 1 * qty, resource: "log" }],
+    stone_shovel: [{ key: "cobblestone", need: 1 * qty, resource: "cobblestone" }, { key: "log", need: 1 * qty, resource: "log" }],
+    iron_shovel: [{ key: "iron", need: 1 * qty, resource: "iron_ore" }, { key: "log", need: 1 * qty, resource: "log" }],
+
+    wooden_sword: [{ key: "log", need: 1 * qty, resource: "log" }],
+    stone_sword: [{ key: "cobblestone", need: 2 * qty, resource: "cobblestone" }, { key: "log", need: 1 * qty, resource: "log" }],
+    iron_sword: [{ key: "iron", need: 2 * qty, resource: "iron_ore" }, { key: "log", need: 1 * qty, resource: "log" }],
+  };
+
+  const plan = recipes[item];
+  if (!plan) return null;
+  return { item, qty, plan };
+}
+
+function _materialCurrentStock(key) {
+  switch (key) {
+    case "log":
+      return _countLogsAny();
+    case "cobblestone":
+      return _countCobbleAny();
+    case "iron":
+      return _countIronAny();
+    default:
+      return 0;
+  }
+}
+
+function collectMaterialsForItem(rawItem, count = 1) {
+  if (!bot || !connected || !mcData) return { ok: false, error: "bot offline" };
+  const planned = _materialPlanForItem(rawItem, count);
+  if (!planned) {
+    return { ok: false, error: `nao tenho plano de coleta para: ${rawItem}` };
+  }
+
+  const deficits = planned.plan
+    .map((req) => {
+      const have = _materialCurrentStock(req.key);
+      return {
+        ...req,
+        have,
+        missing: Math.max(0, Number(req.need || 0) - Number(have || 0)),
+      };
+    })
+    .filter((x) => x.missing > 0)
+    .sort((a, b) => b.missing - a.missing);
+
+  if (!deficits.length) {
+    return {
+      ok: true,
+      action: "collect_for_item",
+      item: planned.item,
+      done: true,
+      summary: `Materiais suficientes para ${planned.item}.`,
+    };
+  }
+
+  const next = deficits[0];
+  const out = startMining(next.resource, next.missing);
+  if (!out?.ok) return out;
+  return {
+    ok: true,
+    action: "collect_for_item",
+    item: planned.item,
+    done: false,
+    next_resource: next.resource,
+    missing: next.missing,
+    summary: `Coletando ${next.resource} x${next.missing} para ${planned.item}.`,
+  };
 }
 
 function _logToPlankName(logName) {
@@ -322,21 +463,41 @@ async function _craftIntermediatesFromLogs() {
 }
 
 async function _craftIntermediatesSticks() {
+  const targetSticks = Math.max(0, Number(arguments[0] || 0));
   const stickDef = mcData?.itemsByName?.stick;
   if (!stickDef) return 0;
   try {
     const recipes = bot.recipesFor(stickDef.id, null, 1, null) || [];
     if (!recipes.length) return 0;
-    // prepara um lote pequeno para receitas de ferramenta
-    await bot.craft(recipes[0], 4, null);
-    return 4;
+
+    const currentSticks = _inventoryCountByPredicate((it) => String(it.name || "") === "stick");
+    if (targetSticks <= currentSticks) return 0;
+
+    // receita comum: 2 planks -> 4 sticks
+    const missingSticks = Math.max(0, targetSticks - currentSticks);
+    const craftTimes = Math.max(1, Math.ceil(missingSticks / 4));
+    await bot.craft(recipes[0], craftTimes, null);
+    return craftTimes * 4;
   } catch (_e) {
     return 0;
   }
 }
 
+function _estimatedSticksNeeded(targetName, qty = 1) {
+  const target = String(targetName || "");
+  const n = Math.max(1, Number(qty) || 1);
+  if (target.includes("_pickaxe")) return 2 * n;
+  if (target.includes("_axe")) return 2 * n;
+  if (target.includes("_shovel")) return 2 * n;
+  if (target.includes("_hoe")) return 2 * n;
+  if (target.includes("_sword")) return 1 * n;
+  if (target === "fishing_rod") return 3 * n;
+  return 0;
+}
+
 async function _prepareBasicCraftIntermediates(targetName) {
   const target = String(targetName || "");
+  const qty = Math.max(1, Number(arguments[1] || 1));
   let changed = 0;
 
   const beforePlanks = _inventoryCountByPredicate((it) => String(it.name || "").endsWith("_planks"));
@@ -344,17 +505,9 @@ async function _prepareBasicCraftIntermediates(targetName) {
 
   changed += await _craftIntermediatesFromLogs();
 
-  const needsSticks = [
-    "_pickaxe",
-    "_axe",
-    "_shovel",
-    "_sword",
-    "_hoe",
-    "fishing_rod",
-  ].some((x) => target.includes(x));
-
-  if (needsSticks || target === "crafting_table" || target === "furnace") {
-    changed += await _craftIntermediatesSticks();
+  const sticksNeeded = _estimatedSticksNeeded(target, qty);
+  if (sticksNeeded > 0) {
+    changed += await _craftIntermediatesSticks(sticksNeeded);
   }
 
   const afterPlanks = _inventoryCountByPredicate((it) => String(it.name || "").endsWith("_planks"));
@@ -451,6 +604,18 @@ async function craftItem(rawItem, count = 1) {
   const itemName = _resolveCraftTarget(rawItem);
   if (!itemName) return { ok: false, error: `item desconhecido: ${rawItem}` };
 
+  if (itemName === "__any_planks__") {
+    const before = _inventoryCountByPredicate((it) => String(it.name || "").endsWith("_planks"));
+    const converted = await _craftIntermediatesFromLogs();
+    const after = _inventoryCountByPredicate((it) => String(it.name || "").endsWith("_planks"));
+    const crafted = Math.max(0, after - before);
+    if (crafted <= 0 && converted <= 0) {
+      return { ok: false, error: "sem logs para converter em tabuas" };
+    }
+    pushEvent("craft_done", { item: "planks", requested: count, crafted });
+    return { ok: true, action: "craft", item: "planks", requested: Number(count || 1), crafted };
+  }
+
   const itemDef = mcData.itemsByName[itemName];
   if (!itemDef) return { ok: false, error: `item sem definicao: ${itemName}` };
 
@@ -465,7 +630,7 @@ async function craftItem(rawItem, count = 1) {
 
   if (!recipes.length) {
     // tenta preparar materiais intermediarios (ex.: tronco -> tabua -> graveto)
-    await _prepareBasicCraftIntermediates(itemName);
+    await _prepareBasicCraftIntermediates(itemName, qty);
 
     recipes = bot.recipesFor(itemDef.id, null, qty, null) || [];
     if (!recipes.length) {
@@ -523,40 +688,65 @@ function _findPlacementSpot(positionMode = "front") {
   if (!bot?.entity) return null;
   const feet = bot.entity.position.floored();
   const mode = String(positionMode || "front").toLowerCase().trim();
+  const yaw = bot.entity.yaw || 0;
+  const fdx = Math.round(-Math.sin(yaw));
+  const fdz = Math.round(-Math.cos(yaw));
 
-  let target = null;
-  if (mode === "here" || mode === "aqui" || mode === "under" || mode === "embaixo") {
-    target = feet.offset(0, -1, 0);
-  } else {
-    const yaw = bot.entity.yaw || 0;
-    const dx = Math.round(-Math.sin(yaw));
-    const dz = Math.round(-Math.cos(yaw));
-    target = feet.offset(dx, 0, dz);
-  }
-
-  const targetBlock = bot.blockAt(target);
-  if (!_isPlaceableTargetBlock(targetBlock)) {
-    return { ok: false, error: "espaco ocupado para colocar bloco" };
-  }
-
-  const refs = [
-    target.offset(0, -1, 0),
-    target.offset(1, 0, 0),
-    target.offset(-1, 0, 0),
-    target.offset(0, 0, 1),
-    target.offset(0, 0, -1),
-    target.offset(0, 1, 0),
+  // "here/aqui/no chao" significa "perto de mim no chao", nao literalmente embaixo do bot.
+  const around = [
+    [fdx, 0, fdz],
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+    [fdx + 1, 0, fdz],
+    [fdx - 1, 0, fdz],
+    [fdx, 0, fdz + 1],
+    [fdx, 0, fdz - 1],
+    [fdx * 2, 0, fdz * 2],
   ];
 
-  for (const pos of refs) {
-    const ref = bot.blockAt(pos);
-    if (!ref || ref.boundingBox === "empty") continue;
-    const faceVector = target.minus(ref.position);
-    if (Math.abs(faceVector.x) + Math.abs(faceVector.y) + Math.abs(faceVector.z) !== 1) continue;
-    return { ok: true, target, ref, faceVector };
+  const inFront = [
+    [fdx, 0, fdz],
+    [fdx * 2, 0, fdz * 2],
+    [fdx + 1, 0, fdz],
+    [fdx - 1, 0, fdz],
+    [fdx, 0, fdz + 1],
+    [fdx, 0, fdz - 1],
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+  ];
+
+  const underMode = mode === "under" || mode === "embaixo";
+  const hereMode = mode === "here" || mode === "aqui";
+  const offsets = underMode ? [[0, -1, 0], ...around] : (hereMode ? around : inFront);
+  const targets = offsets.map(([dx, dy, dz]) => feet.offset(dx, dy, dz));
+
+  for (const target of targets) {
+    const targetBlock = bot.blockAt(target);
+    if (!_isPlaceableTargetBlock(targetBlock)) continue;
+
+    const refs = [
+      target.offset(0, -1, 0),
+      target.offset(1, 0, 0),
+      target.offset(-1, 0, 0),
+      target.offset(0, 0, 1),
+      target.offset(0, 0, -1),
+      target.offset(0, 1, 0),
+    ];
+
+    for (const pos of refs) {
+      const ref = bot.blockAt(pos);
+      if (!ref || ref.boundingBox === "empty") continue;
+      const faceVector = target.minus(ref.position);
+      if (Math.abs(faceVector.x) + Math.abs(faceVector.y) + Math.abs(faceVector.z) !== 1) continue;
+      return { ok: true, target, ref, faceVector };
+    }
   }
 
-  return { ok: false, error: "nenhum bloco de apoio para posicionar" };
+  return { ok: false, error: "nao achei espaco valido por perto para colocar bloco" };
 }
 
 async function placeBlock(rawItem, count = 1, position = "front") {
@@ -667,6 +857,76 @@ async function _tryEatIfNeeded() {
   } catch (_e) {
     return false;
   }
+}
+
+async function _tryMaintainSurvivalStock() {
+  if (!state.survivalEnabled || !MC_STOCK_AUTOFILL) return false;
+  if (!bot || !connected || !mcData) return false;
+
+  const now = Date.now();
+  if (now - (state.lastStockCheckTs || 0) < MC_STOCK_CHECK_MS) return false;
+  state.lastStockCheckTs = now;
+
+  if (state.stockInProgress) return false;
+  state.stockInProgress = true;
+  try {
+    const logs = _countLogsAny();
+    const planks = _inventoryCountByPredicate((it) => String(it.name || "").endsWith("_planks"));
+    const sticks = _inventoryCountByPredicate((it) => String(it.name || "") === "stick");
+    const cobble = _countCobbleAny();
+    const food = _countFoodAny();
+
+    // 1) Converter logs em tabuas quando faltar base de craft
+    if (planks < MC_STOCK_MIN_PLANKS && logs > 0) {
+      const before = planks;
+      await _craftIntermediatesFromLogs();
+      const after = _inventoryCountByPredicate((it) => String(it.name || "").endsWith("_planks"));
+      if (after > before) {
+        pushEvent("stock_restock", { kind: "planks", before, after, min: MC_STOCK_MIN_PLANKS });
+        return true;
+      }
+    }
+
+    // 2) Craftar apenas o minimo de sticks necessario
+    if (sticks < MC_STOCK_MIN_STICKS) {
+      const crafted = await _craftIntermediatesSticks(MC_STOCK_MIN_STICKS);
+      if (crafted > 0) {
+        pushEvent("stock_restock", { kind: "sticks", crafted, min: MC_STOCK_MIN_STICKS });
+        return true;
+      }
+    }
+
+    // 3) Se estiver em aventura, sair pra coletar base quando faltar muito
+    if (state.mode === "adventure") {
+      if (logs < MC_STOCK_MIN_LOGS) {
+        const miss = Math.max(1, MC_STOCK_MIN_LOGS - logs);
+        const out = startMining("log", miss);
+        if (out?.ok) {
+          pushEvent("stock_collect", { kind: "log", missing: miss, min: MC_STOCK_MIN_LOGS });
+          return true;
+        }
+      }
+      if (cobble < MC_STOCK_MIN_COBBLE) {
+        const miss = Math.max(1, MC_STOCK_MIN_COBBLE - cobble);
+        const out = startMining("cobblestone", miss);
+        if (out?.ok) {
+          pushEvent("stock_collect", { kind: "cobblestone", missing: miss, min: MC_STOCK_MIN_COBBLE });
+          return true;
+        }
+      }
+      // Heuristica simples: se comida esta baixa, tenta procurar recurso alimentar.
+      if (food < MC_STOCK_MIN_FOOD) {
+        const out = findResource("wheat");
+        if (out?.ok) {
+          pushEvent("stock_collect", { kind: "food_hint_wheat", have: food, min: MC_STOCK_MIN_FOOD });
+          return true;
+        }
+      }
+    }
+  } finally {
+    state.stockInProgress = false;
+  }
+  return false;
 }
 
 function followPlayer(playerName) {
@@ -905,6 +1165,7 @@ async function runAutonomyTick() {
 
   if (_tryFleeIfLowHealth()) return;
   await _tryEatIfNeeded();
+  if (await _tryMaintainSurvivalStock()) return;
 
   if (state.combatEnabled) {
     const now = Date.now();
@@ -1345,6 +1606,9 @@ app.post("/action", async (req, res) => {
       break;
     case "mine":
       out = startMining(String(payload.resource || ""), Number(payload.count || 1));
+      break;
+    case "collect_for_item":
+      out = collectMaterialsForItem(String(payload.item || ""), Number(payload.count || 1));
       break;
     default:
       out = { ok: false, error: `action desconhecida: ${action}` };

@@ -26,7 +26,7 @@ class ObsidianMemory:
         self.reviews_dir = self.root / "ActionReviews"
         self.state_file = self.root / ".learning_state.json"
         self._lock = threading.Lock()
-        self._state = {"actions": {}, "updated": ""}
+        self._state = {"actions": {}, "procedures": {}, "concept_edges": {}, "updated": ""}
         self._ensure_dirs()
         self._load_state()
 
@@ -105,8 +105,12 @@ class ObsidianMemory:
                 self._state = raw
                 if "actions" not in self._state or not isinstance(self._state["actions"], dict):
                     self._state["actions"] = {}
+                if "procedures" not in self._state or not isinstance(self._state["procedures"], dict):
+                    self._state["procedures"] = {}
+                if "concept_edges" not in self._state or not isinstance(self._state["concept_edges"], dict):
+                    self._state["concept_edges"] = {}
         except Exception:
-            self._state = {"actions": {}, "updated": ""}
+            self._state = {"actions": {}, "procedures": {}, "concept_edges": {}, "updated": ""}
 
     def _save_state(self):
         if not self.enabled:
@@ -116,6 +120,10 @@ class ObsidianMemory:
             json.dumps(self._state, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    @staticmethod
+    def _normalize_proc_id(proc_id: str) -> str:
+        return _slug(proc_id or "unknown")
 
     @staticmethod
     def _is_success(status: str) -> bool:
@@ -234,6 +242,115 @@ class ObsidianMemory:
             action_state["insights"] = action_state["insights"][-20:]
         return action_state
 
+    def _update_procedure_states(
+        self,
+        *,
+        procedure_ids: list[str],
+        concepts: list[str],
+        status: str,
+        action: str,
+        command: str,
+        summary: str,
+    ):
+        if not procedure_ids:
+            return
+        for raw_id in procedure_ids:
+            pid = self._normalize_proc_id(raw_id)
+            pdata = self._state["procedures"].setdefault(
+                pid,
+                {
+                    "ok": 0,
+                    "fail": 0,
+                    "neutral": 0,
+                    "fail_streak": 0,
+                    "ok_streak": 0,
+                    "last_status": "",
+                    "last_action": "",
+                    "last_command": "",
+                    "last_summary": "",
+                    "actions": {},
+                    "concepts": {},
+                },
+            )
+
+            if self._is_success(status):
+                pdata["ok"] += 1
+                pdata["ok_streak"] += 1
+                pdata["fail_streak"] = 0
+            elif self._is_failure(status):
+                pdata["fail"] += 1
+                pdata["fail_streak"] += 1
+                pdata["ok_streak"] = 0
+            else:
+                pdata["neutral"] += 1
+                pdata["ok_streak"] = 0
+
+            pdata["last_status"] = status
+            pdata["last_action"] = action
+            pdata["last_command"] = command
+            pdata["last_summary"] = summary
+
+            act_key = _slug(action or "unknown")
+            pdata["actions"][act_key] = int(pdata["actions"].get(act_key, 0)) + 1
+
+            for concept in concepts or []:
+                c = _slug(concept)
+                pdata["concepts"][c] = int(pdata["concepts"].get(c, 0)) + 1
+                edge_key = f"{c}::{pid}"
+                self._state["concept_edges"][edge_key] = int(self._state["concept_edges"].get(edge_key, 0)) + 1
+
+    def _procedure_score(self, pid: str, query_text: str = "") -> float:
+        data = self._state.get("procedures", {}).get(self._normalize_proc_id(pid), {})
+        ok = float(data.get("ok", 0))
+        fail = float(data.get("fail", 0))
+        neutral = float(data.get("neutral", 0))
+        total = ok + fail + neutral
+        if total <= 0:
+            return 0.0
+        success_rate = ok / max(1.0, ok + fail)
+        confidence = min(1.0, total / 8.0)
+        streak_penalty = min(0.5, float(data.get("fail_streak", 0)) * 0.12)
+        score = (success_rate * 2.0 + confidence) - streak_penalty
+        q = (query_text or "").lower()
+        if q and pid in q:
+            score += 0.2
+        return score
+
+    def rank_procedure_ids(self, procedure_ids: list[str], query_text: str = "") -> list[str]:
+        uniq = []
+        seen = set()
+        for p in procedure_ids or []:
+            pid = self._normalize_proc_id(p)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            uniq.append(pid)
+        ranked = sorted(
+            uniq,
+            key=lambda pid: self._procedure_score(pid, query_text=query_text),
+            reverse=True,
+        )
+        return ranked
+
+    def get_procedure_learning_context(self, procedure_ids: list[str], top_k: int = 2) -> str:
+        if not self.enabled or not procedure_ids:
+            return ""
+        ranked = self.rank_procedure_ids(procedure_ids)[: max(1, int(top_k or 1))]
+        lines = []
+        for pid in ranked:
+            data = self._state.get("procedures", {}).get(pid, {})
+            ok = int(data.get("ok", 0))
+            fail = int(data.get("fail", 0))
+            fs = int(data.get("fail_streak", 0))
+            last_action = str(data.get("last_action", "")).strip()
+            last_summary = str(data.get("last_summary", "")).strip()
+            lines.append(
+                f"- procedure={pid} | ok={ok} fail={fail} fail_streak={fs} | ultima_acao={last_action} | ultimo={last_summary}"
+            )
+        if not lines:
+            return ""
+        return "Historico de eficacia dos procedures:\n" + "\n".join(lines)
+
     def get_learning_context(self, user_text: str, top_k: int = 3) -> str:
         if not self.enabled:
             return ""
@@ -283,6 +400,7 @@ class ObsidianMemory:
         status: str,
         summary: str,
         action: str = "unknown",
+        procedure_ids: list[str] | None = None,
     ):
         if not self.enabled:
             return
@@ -295,6 +413,7 @@ class ObsidianMemory:
             status = (status or "info").strip() or "info"
             command = (command or "").strip()
             summary = (summary or "").strip()
+            procedure_ids = [self._normalize_proc_id(p) for p in (procedure_ids or []) if str(p or "").strip()]
             concepts = self._extract_concepts(action, command, summary)
             concept_links = [f"[[{self._concept_path(c).stem}]]" for c in concepts]
 
@@ -315,31 +434,32 @@ class ObsidianMemory:
             learning_link = learning_note.stem
             review_link = review_note.stem
             concepts_str = " ".join(concept_links) if concept_links else "(sem conceitos)"
+            procedures_links = " ".join(f"[[{pid}]]" for pid in procedure_ids) if procedure_ids else "(sem procedures)"
             event_line = (
                 f"- {ts} | [[{person_link}]] | acao=[[{learning_link}]] | review=[[{review_link}]] "
-                f"| status={status} | cmd=`{command}` | {summary} | conceitos: {concepts_str}"
+                f"| status={status} | cmd=`{command}` | {summary} | conceitos: {concepts_str} | procedures: {procedures_links}"
             )
 
             self._append_line(session_note, event_line)
             self._append_line(
                 person_note,
                 f"- {date} {ts} | acao=[[{learning_link}]] | review=[[{review_link}]] "
-                f"| status={status} | cmd=`{command}` | {summary} | conceitos: {concepts_str}",
+                f"| status={status} | cmd=`{command}` | {summary} | conceitos: {concepts_str} | procedures: {procedures_links}",
             )
             self._append_line(
                 learning_note,
                 f"- {date} {ts} | user=[[{person_link}]] | review=[[{review_link}]] "
-                f"| status={status} | cmd=`{command}` | {summary} | conceitos: {concepts_str}",
+                f"| status={status} | cmd=`{command}` | {summary} | conceitos: {concepts_str} | procedures: {procedures_links}",
             )
             self._append_line(
                 review_note,
-                f"- {date} {ts} | user=[[{person_link}]] | status={status} | cmd=`{command}` | {summary}",
+                f"- {date} {ts} | user=[[{person_link}]] | status={status} | cmd=`{command}` | {summary} | procedures: {procedures_links}",
             )
             for concept in concepts:
                 cpath = self._concept_path(concept)
                 self._append_line(
                     cpath,
-                    f"- {date} {ts} | acao=[[{learning_link}]] | status={status} | cmd=`{command}` | {summary}",
+                    f"- {date} {ts} | acao=[[{learning_link}]] | status={status} | cmd=`{command}` | {summary} | procedures: {procedures_links}",
                 )
 
             # heuristica simples de aprendizado
@@ -364,6 +484,14 @@ class ObsidianMemory:
                 )
 
             action_state = self._update_action_state(action, status, command, summary)
+            self._update_procedure_states(
+                procedure_ids=procedure_ids,
+                concepts=concepts,
+                status=status,
+                action=action,
+                command=command,
+                summary=summary,
+            )
 
             ok = int(action_state.get("ok", 0))
             fail = int(action_state.get("fail", 0))

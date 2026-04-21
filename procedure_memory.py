@@ -103,6 +103,11 @@ def buscar_procedures(query: str, top_k: int = 2) -> List[ProcedureNote]:
 
 def montar_contexto_procedural(query: str, top_k: int = 2) -> str:
     notas = buscar_procedures(query, top_k=top_k)
+    return montar_contexto_procedural_de_notas(notas, top_k=top_k)
+
+
+def montar_contexto_procedural_de_notas(notas: List[ProcedureNote], top_k: int = 2) -> str:
+    notas = (notas or [])[: max(1, int(top_k or 1))]
     if not notas:
         return ""
     chunks = []

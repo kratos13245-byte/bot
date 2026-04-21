@@ -47,7 +47,7 @@ from memory import (
 )
 from mood import ajustar_humor, carregar_humor, resetar_humor
 from obsidian_memory import ObsidianMemory
-from procedure_memory import montar_contexto_procedural
+from procedure_memory import buscar_procedures, montar_contexto_procedural_de_notas
 from tts import falar
 from twitch_bot import TWITCH_TRIGGER_MODE, TwitchChatBridge
 from vision_local import VisionWatcher
@@ -110,6 +110,7 @@ ALLOWED_MC_ACTIONS = {
     "find_biome",
     "find_resource",
     "mine",
+    "collect_for_item",
     "craft_tool",
     "drop_item",
     "place_block",
@@ -362,19 +363,41 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         ctx = {}
         contexto_resumo = ""
 
+    procedure_ids = []
     try:
-        contexto_procedural = montar_contexto_procedural(entrada, top_k=2)
+        procedure_notes = buscar_procedures(entrada, top_k=6)
+        if procedure_notes:
+            ranked_ids = obsidian_memory.rank_procedure_ids(
+                [n.id_ for n in procedure_notes],
+                query_text=entrada,
+            )
+            by_id = {str(n.id_).strip().lower(): n for n in procedure_notes}
+            ordered_notes = [by_id[i] for i in ranked_ids if i in by_id]
+            procedure_notes = ordered_notes if ordered_notes else procedure_notes
+            procedure_ids = [str(n.id_).strip().lower() for n in procedure_notes[:3]]
+            contexto_procedural = montar_contexto_procedural_de_notas(procedure_notes, top_k=3)
+        else:
+            contexto_procedural = ""
     except Exception:
         contexto_procedural = ""
     try:
         contexto_aprendizado = obsidian_memory.get_learning_context(entrada, top_k=3)
     except Exception:
         contexto_aprendizado = ""
+    try:
+        contexto_procedure_perf = obsidian_memory.get_procedure_learning_context(procedure_ids, top_k=2)
+    except Exception:
+        contexto_procedure_perf = ""
     if contexto_aprendizado:
         if contexto_procedural:
             contexto_procedural = f"{contexto_procedural}\n\n{contexto_aprendizado}"
         else:
             contexto_procedural = contexto_aprendizado
+    if contexto_procedure_perf:
+        if contexto_procedural:
+            contexto_procedural = f"{contexto_procedural}\n\n{contexto_procedure_perf}"
+        else:
+            contexto_procedural = contexto_procedure_perf
 
     try:
         plano = planejar_acao_minecraft(
@@ -401,6 +424,7 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
             status="planner_invalid",
             summary=f"acao invalida sugerida: {action}",
             action="planner_invalid",
+            procedure_ids=procedure_ids,
         )
         return None
 
@@ -478,6 +502,7 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
             status="planner_error",
             summary=str(e),
             action=action,
+            procedure_ids=procedure_ids,
         )
         return None
 
@@ -511,6 +536,7 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         status="planner_ok",
         summary=feedback,
         action=action,
+        procedure_ids=procedure_ids,
     )
     if enviar_chat:
         with suppress(Exception):
