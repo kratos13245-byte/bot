@@ -114,18 +114,74 @@ def extrair_json_seguro(conteudo: str):
         return None
 
 
+def _extrair_payload_json(conteudo, max_depth: int = 4):
+    atual = conteudo
+    for _ in range(max_depth):
+        if isinstance(atual, dict):
+            return atual
+        if isinstance(atual, list):
+            for item in atual:
+                if isinstance(item, dict):
+                    return item
+            return None
+
+        texto = str(atual or "").strip()
+        if not texto:
+            return None
+
+        direto = extrair_json_seguro(texto)
+        if isinstance(direto, dict):
+            return direto
+        if isinstance(direto, str) and direto.strip() and direto.strip() != texto:
+            atual = direto.strip()
+            continue
+
+        # Caso venha como string JSON inteira com escapes.
+        try:
+            decoded = json.loads(texto)
+        except Exception:
+            decoded = None
+        if isinstance(decoded, dict):
+            return decoded
+        if isinstance(decoded, str) and decoded.strip() and decoded.strip() != texto:
+            atual = decoded.strip()
+            continue
+
+        # Fallback: remove escapes comuns de aspas.
+        desescapado = texto.replace('\\"', '"')
+        if desescapado != texto:
+            direto2 = extrair_json_seguro(desescapado)
+            if isinstance(direto2, dict):
+                return direto2
+            if isinstance(direto2, str) and direto2.strip() and direto2.strip() != desescapado:
+                atual = direto2.strip()
+                continue
+        break
+    return None
+
+
 def _desembrulhar_texto_json(texto_raw):
     texto = str(texto_raw or "").strip()
     if not texto:
         return "", None, []
 
-    # Alguns modelos retornam JSON serializado dentro do campo "texto".
-    nested = extrair_json_seguro(texto)
+    # Alguns modelos retornam JSON serializado dentro do campo "texto"
+    # e, as vezes, em mais de uma camada.
+    nested = _extrair_payload_json(texto, max_depth=4)
     if isinstance(nested, dict):
         nested_texto = str(nested.get("texto", "")).strip()
         nested_emocao = validar_emocao(nested.get("emocao", EMOCAO_PADRAO))
         nested_anotacoes = validar_anotacoes(nested.get("anotacoes", []))
         if nested_texto:
+            nested2 = _extrair_payload_json(nested_texto, max_depth=3)
+            if isinstance(nested2, dict):
+                nested_texto2 = str(nested2.get("texto", "")).strip()
+                if nested_texto2:
+                    nested_texto = nested_texto2
+                    nested_emocao = validar_emocao(nested2.get("emocao", nested_emocao))
+                    nested_anotacoes2 = validar_anotacoes(nested2.get("anotacoes", []))
+                    if nested_anotacoes2:
+                        nested_anotacoes = nested_anotacoes2
             return nested_texto, nested_emocao, nested_anotacoes
 
     return texto, None, []
@@ -324,7 +380,7 @@ def gerar_resposta(prompt_usuario: str) -> dict:
         max_tokens=_env_int("AI_MAX_TOKENS_REPLY", 320),
         timeout=120,
     )
-    resultado = extrair_json_seguro(conteudo)
+    resultado = _extrair_payload_json(conteudo, max_depth=4)
 
     if resultado is not None:
         texto_raw = resultado.get("texto", "")
@@ -355,7 +411,7 @@ def gerar_resposta(prompt_usuario: str) -> dict:
         return {"texto": texto, "emocao": emocao, "anotacoes": anotacoes}
 
     return {
-        "texto": conteudo if conteudo else "Deu ruim aqui, tenta de novo.",
+        "texto": (_desembrulhar_texto_json(conteudo)[0] if conteudo else "") or "Deu ruim aqui, tenta de novo.",
         "emocao": EMOCAO_PADRAO,
         "anotacoes": [],
     }
