@@ -114,6 +114,23 @@ def extrair_json_seguro(conteudo: str):
         return None
 
 
+def _desembrulhar_texto_json(texto_raw):
+    texto = str(texto_raw or "").strip()
+    if not texto:
+        return "", None, []
+
+    # Alguns modelos retornam JSON serializado dentro do campo "texto".
+    nested = extrair_json_seguro(texto)
+    if isinstance(nested, dict):
+        nested_texto = str(nested.get("texto", "")).strip()
+        nested_emocao = validar_emocao(nested.get("emocao", EMOCAO_PADRAO))
+        nested_anotacoes = validar_anotacoes(nested.get("anotacoes", []))
+        if nested_texto:
+            return nested_texto, nested_emocao, nested_anotacoes
+
+    return texto, None, []
+
+
 def validar_emocao(emocao: str) -> str:
     validas = {"normal", "amor", "choro", "irritada", "animada", "negar", "choque"}
     emocao = (emocao or "").strip().lower()
@@ -310,9 +327,22 @@ def gerar_resposta(prompt_usuario: str) -> dict:
     resultado = extrair_json_seguro(conteudo)
 
     if resultado is not None:
-        texto = str(resultado.get("texto", "")).strip() or "Ta, isso saiu meio torto. Fala de novo."
+        texto_raw = resultado.get("texto", "")
         emocao = validar_emocao(resultado.get("emocao", EMOCAO_PADRAO))
         anotacoes = validar_anotacoes(resultado.get("anotacoes", []))
+
+        texto, nested_emocao, nested_anotacoes = _desembrulhar_texto_json(texto_raw)
+        texto = texto or "Ta, isso saiu meio torto. Fala de novo."
+        if nested_emocao:
+            emocao = nested_emocao
+        if nested_anotacoes:
+            existentes_nested = {(a["alvo"], a["categoria"], a["nota"]) for a in anotacoes}
+            for n in nested_anotacoes:
+                chave = (n["alvo"], n["categoria"], n["nota"])
+                if chave not in existentes_nested:
+                    anotacoes.append(n)
+                    existentes_nested.add(chave)
+
         if os.getenv("MEMORY_HEURISTIC_NOTES", "1") == "1":
             heur = _extrair_anotacoes_heuristicas(prompt_usuario)
             if heur:
