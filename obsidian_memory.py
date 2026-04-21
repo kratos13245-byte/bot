@@ -24,6 +24,7 @@ class ObsidianMemory:
         self.learnings_dir = self.root / "Learnings"
         self.concepts_dir = self.root / "Concepts"
         self.reviews_dir = self.root / "ActionReviews"
+        self.feedback_dir = self.root / "HumanFeedback"
         self.state_file = self.root / ".learning_state.json"
         self._lock = threading.Lock()
         self._state = {"actions": {}, "procedures": {}, "concept_edges": {}, "updated": ""}
@@ -38,6 +39,7 @@ class ObsidianMemory:
         self.learnings_dir.mkdir(parents=True, exist_ok=True)
         self.concepts_dir.mkdir(parents=True, exist_ok=True)
         self.reviews_dir.mkdir(parents=True, exist_ok=True)
+        self.feedback_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_moc()
 
     def _append_line(self, path: Path, line: str):
@@ -93,6 +95,10 @@ class ObsidianMemory:
     def _review_path(self, action: str) -> Path:
         month = datetime.now().strftime("%Y-%m")
         return self.reviews_dir / f"mc_review_{_slug(action)}_{month}.md"
+
+    def _feedback_path(self) -> Path:
+        month = datetime.now().strftime("%Y-%m")
+        return self.feedback_dir / f"mc_feedback_{month}.md"
 
     def _load_state(self):
         if not self.enabled:
@@ -298,6 +304,146 @@ class ObsidianMemory:
                 pdata["concepts"][c] = int(pdata["concepts"].get(c, 0)) + 1
                 edge_key = f"{c}::{pid}"
                 self._state["concept_edges"][edge_key] = int(self._state["concept_edges"].get(edge_key, 0)) + 1
+
+    def apply_human_feedback(
+        self,
+        *,
+        user: str,
+        raw_command: str,
+        feedback: str,
+        positive: bool,
+    ) -> dict:
+        if not self.enabled:
+            return {"ok": False, "reason": "memory_disabled"}
+
+        with self._lock:
+            now = datetime.now()
+            ts = now.strftime("%H:%M:%S")
+            date = now.strftime("%Y-%m-%d")
+            user = (user or "desconhecido").strip() or "desconhecido"
+            raw_command = (raw_command or "").strip()
+            feedback = (feedback or "").strip()
+            signal = "positivo" if positive else "negativo"
+
+            feedback_note = self._feedback_path()
+            person_note = self._person_path(user)
+            self._ensure_header(feedback_note, f"Feedback humano {now.strftime('%Y-%m')}", "feedback", "minecraft,feedback")
+            self._ensure_header(person_note, f"Usuario Minecraft: {user}", "person", "minecraft,person")
+
+            low = f"{raw_command} {feedback}".lower()
+            tokens = set(re.findall(r"[a-z0-9_]{2,}", low))
+
+            action_keys = list((self._state.get("actions") or {}).keys())
+            matched_actions = [a for a in action_keys if a in low]
+            alias_to_action = {
+                "craft": "craft_tool",
+                "craftar": "craft_tool",
+                "crafting": "craft_tool",
+                "mine": "mine",
+                "minerar": "mine",
+                "explorar": "explore",
+                "explore": "explore",
+                "seguir": "follow_player",
+                "follow": "follow_player",
+                "colocar": "place_block",
+                "place": "place_block",
+                "interagir": "interact_block",
+                "interact": "interact_block",
+                "coletar": "collect_for_item",
+                "coleta": "collect_for_item",
+            }
+            for t in tokens:
+                mapped = alias_to_action.get(t)
+                if mapped and mapped not in matched_actions:
+                    matched_actions.append(mapped)
+
+            matched_actions = [a for a in matched_actions if a in (self._state.get("actions") or {})]
+
+            procedure_keys = list((self._state.get("procedures") or {}).keys())
+            matched_procedures = [p for p in procedure_keys if p in low]
+
+            if not matched_actions and action_keys:
+                # fallback: aplica no ultimo action mais recente conhecido
+                latest = sorted(
+                    action_keys,
+                    key=lambda a: str((self._state.get("actions", {}).get(a, {}) or {}).get("last_summary", "")),
+                    reverse=True,
+                )
+                if latest:
+                    matched_actions = [latest[0]]
+
+            for action in matched_actions:
+                astate = self._state["actions"].setdefault(
+                    action,
+                    {
+                        "ok": 0,
+                        "fail": 0,
+                        "neutral": 0,
+                        "fail_streak": 0,
+                        "ok_streak": 0,
+                        "last_status": "",
+                        "last_command": "",
+                        "last_summary": "",
+                        "insights": [],
+                    },
+                )
+                if positive:
+                    astate["ok"] = int(astate.get("ok", 0)) + 1
+                    astate["ok_streak"] = int(astate.get("ok_streak", 0)) + 1
+                    astate["fail_streak"] = 0
+                else:
+                    astate["fail"] = int(astate.get("fail", 0)) + 1
+                    astate["fail_streak"] = int(astate.get("fail_streak", 0)) + 1
+                    astate["ok_streak"] = 0
+                insight = f"feedback_humano_{signal}: {feedback}"
+                astate["insights"] = list(astate.get("insights", [])) + [insight]
+                if len(astate["insights"]) > 20:
+                    astate["insights"] = astate["insights"][-20:]
+
+                learning_note = self._learning_path(action)
+                self._ensure_header(learning_note, f"Acao Minecraft: {action}", "learning", "minecraft,learning")
+                self._append_line(learning_note, f"- {date} {ts} | reforco_{signal} | user=[[{person_note.stem}]] | {feedback}")
+
+            for pid in matched_procedures:
+                pdata = self._state["procedures"].setdefault(
+                    pid,
+                    {
+                        "ok": 0,
+                        "fail": 0,
+                        "neutral": 0,
+                        "fail_streak": 0,
+                        "ok_streak": 0,
+                        "last_status": "",
+                        "last_action": "",
+                        "last_command": "",
+                        "last_summary": "",
+                        "actions": {},
+                        "concepts": {},
+                    },
+                )
+                if positive:
+                    pdata["ok"] = int(pdata.get("ok", 0)) + 1
+                    pdata["ok_streak"] = int(pdata.get("ok_streak", 0)) + 1
+                    pdata["fail_streak"] = 0
+                else:
+                    pdata["fail"] = int(pdata.get("fail", 0)) + 1
+                    pdata["fail_streak"] = int(pdata.get("fail_streak", 0)) + 1
+                    pdata["ok_streak"] = 0
+                pdata["last_status"] = f"feedback_{signal}"
+                pdata["last_summary"] = feedback
+
+            self._append_line(
+                feedback_note,
+                f"- {date} {ts} | user=[[{person_note.stem}]] | sinal={signal} | cmd=`{raw_command}` | feedback={feedback} | actions={matched_actions or ['-']} | procedures={matched_procedures or ['-']}",
+            )
+
+            self._save_state()
+            return {
+                "ok": True,
+                "matched_actions": matched_actions,
+                "matched_procedures": matched_procedures,
+                "signal": signal,
+            }
 
     def _procedure_score(self, pid: str, query_text: str = "") -> float:
         data = self._state.get("procedures", {}).get(self._normalize_proc_id(pid), {})

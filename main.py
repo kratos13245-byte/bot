@@ -240,6 +240,36 @@ def _is_negotiation_cancel(text: str) -> bool:
     return any(c in msg for c in checks)
 
 
+def _parse_human_feedback_command(text: str):
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    msg = raw.lower()
+    msg = re.sub(r"\s+", " ", msg)
+
+    m_pos = re.search(
+        r"(?:reforco|reforço)\s*(?:positivo|certo|acerto)\s*[:\-]?\s*(.+)$",
+        msg,
+        flags=re.IGNORECASE,
+    )
+    if m_pos:
+        feedback = (m_pos.group(1) or "").strip()
+        if feedback:
+            return {"positive": True, "feedback": feedback}
+
+    m_neg = re.search(
+        r"(?:reforco|reforço)\s*(?:negativo|errado|erro)\s*[:\-]?\s*(.+)$",
+        msg,
+        flags=re.IGNORECASE,
+    )
+    if m_neg:
+        feedback = (m_neg.group(1) or "").strip()
+        if feedback:
+            return {"positive": False, "feedback": feedback}
+
+    return None
+
+
 def _cleanup_stale_negotiations():
     now = time.time()
     stale = [u for u, v in mc_pending_negotiation_by_user.items() if now - v.get("ts", 0) > MC_NEGOTIATION_TTL_SEC]
@@ -648,6 +678,39 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
 
     # Fast-path de comandos Minecraft para evitar fila/lag quando houver burst de ordens.
     if origem == "minecraft":
+        fb = _parse_human_feedback_command(entrada)
+        if fb:
+            try:
+                result = obsidian_memory.apply_human_feedback(
+                    user=autor,
+                    raw_command=entrada,
+                    feedback=fb["feedback"],
+                    positive=bool(fb["positive"]),
+                )
+            except Exception as e:
+                result = {"ok": False, "reason": str(e)}
+
+            if result.get("ok"):
+                signal = "positivo" if fb["positive"] else "negativo"
+                acts = result.get("matched_actions") or []
+                procs = result.get("matched_procedures") or []
+                texto = (
+                    f"Feedback {signal} registrado. "
+                    f"Acoes afetadas: {', '.join(acts) if acts else 'nenhuma especifica'}; "
+                    f"procedures: {', '.join(procs) if procs else 'nenhum especifico'}."
+                )
+            else:
+                texto = "Nao consegui registrar feedback agora."
+
+            if enviar_chat:
+                with suppress(Exception):
+                    enviar_chat(texto)
+            return {
+                "texto": texto,
+                "emocao": "normal",
+                "humor": {"estado": "calma", "paciencia": 7, "delta": 0, "motivo": "feedback"},
+            }
+
         gate = _maybe_gate_minecraft_command(autor, entrada, enviar_chat=enviar_chat)
         if gate.get("blocked"):
             texto = str(gate.get("reply", "Vamos discutir isso melhor antes.")).strip()

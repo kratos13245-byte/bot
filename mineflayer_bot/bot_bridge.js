@@ -34,6 +34,8 @@ const MC_CONTEXT_MAX_ENTITY_DISTANCE = Number(process.env.MC_CONTEXT_MAX_ENTITY_
 const MC_CONTEXT_MAX_PLAYERS = Number(process.env.MC_CONTEXT_MAX_PLAYERS || (PERF_MODE ? "3" : "4"));
 const MC_CONTEXT_MAX_MOBS = Number(process.env.MC_CONTEXT_MAX_MOBS || (PERF_MODE ? "4" : "6"));
 const MC_INTERACT_MAX_DISTANCE = Number(process.env.MC_INTERACT_MAX_DISTANCE || (PERF_MODE ? "10" : "12"));
+const MC_MODE_STALL_MS = Number(process.env.MC_MODE_STALL_MS || "22000");
+const MC_SEARCH_ROAM_RADIUS = Number(process.env.MC_SEARCH_ROAM_RADIUS || "24");
 const MC_STOCK_AUTOFILL = String(process.env.MC_STOCK_AUTOFILL || "1") === "1";
 const MC_STOCK_CHECK_MS = Number(process.env.MC_STOCK_CHECK_MS || "15000");
 const MC_STOCK_MIN_LOGS = Number(process.env.MC_STOCK_MIN_LOGS || "4");
@@ -70,6 +72,9 @@ const state = {
   stuckTicks: 0,
   basePosition: null,
   lastGoalKey: "",
+  lastMode: "idle",
+  modeSinceTs: 0,
+  searchMisses: 0,
   lastStockCheckTs: 0,
   stockInProgress: false,
 };
@@ -113,10 +118,13 @@ function isHostileMob(entity) {
 
 function _setModeIdle() {
   state.mode = "idle";
+  state.lastMode = "idle";
+  state.modeSinceTs = Date.now();
   state.followTarget = "";
   state.goto = null;
   state.biomeTarget = "";
   state.resourceTarget = "";
+  state.searchMisses = 0;
   state.miningTarget = "";
   state.miningRemaining = 0;
   state.miningInProgress = false;
@@ -134,6 +142,14 @@ function _setGoalStable(goal, goalKey, dynamic = false) {
   if (key && state.lastGoalKey === key) return;
   bot.pathfinder.setGoal(goal, dynamic);
   state.lastGoalKey = key;
+}
+
+function _setMode(newMode) {
+  const m = String(newMode || "idle").trim() || "idle";
+  state.mode = m;
+  state.lastMode = m;
+  state.modeSinceTs = Date.now();
+  state.searchMisses = 0;
 }
 
 function _distance3(a, b) {
@@ -933,7 +949,7 @@ function followPlayer(playerName) {
   if (!bot?.pathfinder) return { ok: false, error: "pathfinder offline" };
   const target = String(playerName || "").trim();
   if (!target) return { ok: false, error: "player vazio" };
-  state.mode = "follow";
+  _setMode("follow");
   state.followTarget = target;
   state.goto = null;
   state.biomeTarget = "";
@@ -949,7 +965,7 @@ function gotoPosition(x, y, z, range = 2) {
   if (!Number.isFinite(gx) || !Number.isFinite(gy) || !Number.isFinite(gz)) {
     return { ok: false, error: "coordenadas invalidas" };
   }
-  state.mode = "goto";
+  _setMode("goto");
   state.goto = { x: gx, y: gy, z: gz, range: Number(range) || 2 };
   state.followTarget = "";
   state.biomeTarget = "";
@@ -960,7 +976,7 @@ function gotoPosition(x, y, z, range = 2) {
 function setExplore(enabled = true) {
   if (!bot?.pathfinder) return { ok: false, error: "pathfinder offline" };
   if (enabled) {
-    state.mode = "explore";
+    _setMode("explore");
     state.exploreTarget = null;
     state.exploreAssignedTs = 0;
   }
@@ -996,7 +1012,7 @@ function _pickExploreTarget(origin = null) {
 function setAdventure(enabled = true) {
   if (!bot?.pathfinder) return { ok: false, error: "pathfinder offline" };
   if (enabled) {
-    state.mode = "adventure";
+    _setMode("adventure");
     state.exploreTarget = null;
     state.exploreAssignedTs = 0;
     state.stuckTicks = 0;
@@ -1073,7 +1089,7 @@ function findBiome(biome, resource = "") {
   if (!bot?.pathfinder) return { ok: false, error: "pathfinder offline" };
   const b = String(biome || "").trim();
   if (!b) return { ok: false, error: "biome vazio" };
-  state.mode = "find_biome";
+  _setMode("find_biome");
   state.biomeTarget = b;
   state.resourceTarget = String(resource || "").trim();
   state.followTarget = "";
@@ -1085,7 +1101,7 @@ function findResource(resource) {
   if (!bot?.pathfinder) return { ok: false, error: "pathfinder offline" };
   const r = String(resource || "").trim();
   if (!r) return { ok: false, error: "resource vazio" };
-  state.mode = "find_resource";
+  _setMode("find_resource");
   state.resourceTarget = r;
   state.followTarget = "";
   state.goto = null;
@@ -1099,7 +1115,7 @@ function startMining(resource, count = 1) {
   const n = Number(count);
   if (!r) return { ok: false, error: "resource vazio" };
   if (!Number.isFinite(n) || n <= 0) return { ok: false, error: "count invalido" };
-  state.mode = "mine";
+  _setMode("mine");
   state.miningTarget = r;
   state.miningRemaining = Math.floor(n);
   state.miningInProgress = false;
@@ -1162,6 +1178,23 @@ function buildMinecraftContext() {
 
 async function runAutonomyTick() {
   if (!bot || !connected || !bot.entity || !bot.pathfinder) return;
+
+  if (state.mode !== state.lastMode) {
+    state.lastMode = state.mode;
+    state.modeSinceTs = Date.now();
+    state.searchMisses = 0;
+  }
+
+  if (
+    state.mode !== "idle" &&
+    !state.miningInProgress &&
+    Date.now() - Number(state.modeSinceTs || 0) > MC_MODE_STALL_MS &&
+    !bot.pathfinder.isMoving()
+  ) {
+    pushEvent("mode_stall_reset", { mode: state.mode, ms: Date.now() - Number(state.modeSinceTs || 0) });
+    _setModeIdle();
+    return;
+  }
 
   if (_tryFleeIfLowHealth()) return;
   await _tryEatIfNeeded();
@@ -1260,10 +1293,21 @@ async function runAutonomyTick() {
   if (state.mode === "find_biome" && state.biomeTarget) {
     const anchor = _findBiomeAnchor(state.biomeTarget);
     if (anchor) {
+      state.searchMisses = 0;
       _setGoalStable(new goals.GoalNear(anchor.x, anchor.y, anchor.z, 3), `biome:${anchor.x}:${anchor.y}:${anchor.z}`, false);
       if (state.resourceTarget) {
         const rb = _findResourceBlock(state.resourceTarget);
         if (rb) _setGoalStable(new goals.GoalNear(rb.x, rb.y, rb.z, 2), `biome_resource:${rb.x}:${rb.y}:${rb.z}`, false);
+      }
+    } else {
+      state.searchMisses += 1;
+      const p = bot.entity.position;
+      const tx = p.x + (Math.random() * MC_SEARCH_ROAM_RADIUS * 2 - MC_SEARCH_ROAM_RADIUS);
+      const tz = p.z + (Math.random() * MC_SEARCH_ROAM_RADIUS * 2 - MC_SEARCH_ROAM_RADIUS);
+      _setGoalStable(new goals.GoalNear(tx, p.y, tz, 3), `biome_roam:${Math.round(tx)}:${Math.round(p.y)}:${Math.round(tz)}`, false);
+      if (state.searchMisses > 12) {
+        pushEvent("search_timeout", { mode: "find_biome", biome: state.biomeTarget });
+        _setMode("explore");
       }
     }
     return;
@@ -1271,7 +1315,20 @@ async function runAutonomyTick() {
 
   if (state.mode === "find_resource" && state.resourceTarget) {
     const rb = _findResourceBlock(state.resourceTarget);
-    if (rb) _setGoalStable(new goals.GoalNear(rb.x, rb.y, rb.z, 2), `resource:${rb.x}:${rb.y}:${rb.z}`, false);
+    if (rb) {
+      state.searchMisses = 0;
+      _setGoalStable(new goals.GoalNear(rb.x, rb.y, rb.z, 2), `resource:${rb.x}:${rb.y}:${rb.z}`, false);
+    } else {
+      state.searchMisses += 1;
+      const p = bot.entity.position;
+      const tx = p.x + (Math.random() * MC_SEARCH_ROAM_RADIUS * 2 - MC_SEARCH_ROAM_RADIUS);
+      const tz = p.z + (Math.random() * MC_SEARCH_ROAM_RADIUS * 2 - MC_SEARCH_ROAM_RADIUS);
+      _setGoalStable(new goals.GoalNear(tx, p.y, tz, 3), `resource_roam:${Math.round(tx)}:${Math.round(p.y)}:${Math.round(tz)}`, false);
+      if (state.searchMisses > 10) {
+        pushEvent("search_timeout", { mode: "find_resource", resource: state.resourceTarget });
+        _setMode("explore");
+      }
+    }
     return;
   }
 
