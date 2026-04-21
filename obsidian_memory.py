@@ -27,7 +27,13 @@ class ObsidianMemory:
         self.feedback_dir = self.root / "HumanFeedback"
         self.state_file = self.root / ".learning_state.json"
         self._lock = threading.Lock()
-        self._state = {"actions": {}, "procedures": {}, "concept_edges": {}, "updated": ""}
+        self._state = {
+            "actions": {},
+            "procedures": {},
+            "concept_edges": {},
+            "auto_feedback": {"history": []},
+            "updated": "",
+        }
         self._ensure_dirs()
         self._load_state()
 
@@ -115,8 +121,18 @@ class ObsidianMemory:
                     self._state["procedures"] = {}
                 if "concept_edges" not in self._state or not isinstance(self._state["concept_edges"], dict):
                     self._state["concept_edges"] = {}
+                if "auto_feedback" not in self._state or not isinstance(self._state["auto_feedback"], dict):
+                    self._state["auto_feedback"] = {"history": []}
+                if "history" not in self._state["auto_feedback"] or not isinstance(self._state["auto_feedback"]["history"], list):
+                    self._state["auto_feedback"]["history"] = []
         except Exception:
-            self._state = {"actions": {}, "procedures": {}, "concept_edges": {}, "updated": ""}
+            self._state = {
+                "actions": {},
+                "procedures": {},
+                "concept_edges": {},
+                "auto_feedback": {"history": []},
+                "updated": "",
+            }
 
     def _save_state(self):
         if not self.enabled:
@@ -216,6 +232,9 @@ class ObsidianMemory:
                 "last_command": "",
                 "last_summary": "",
                 "insights": [],
+                "score": 0.0,
+                "auto_positive": 0,
+                "auto_negative": 0,
             },
         )
 
@@ -248,6 +267,47 @@ class ObsidianMemory:
             action_state["insights"] = action_state["insights"][-20:]
         return action_state
 
+    def _reinforce_action_state(
+        self,
+        *,
+        action: str,
+        positive: bool,
+        reason: str,
+        command: str,
+        summary: str,
+    ):
+        action = action or "unknown"
+        action_state = self._state["actions"].setdefault(
+            action,
+            {
+                "ok": 0,
+                "fail": 0,
+                "neutral": 0,
+                "fail_streak": 0,
+                "ok_streak": 0,
+                "last_status": "",
+                "last_command": "",
+                "last_summary": "",
+                "insights": [],
+                "score": 0.0,
+                "auto_positive": 0,
+                "auto_negative": 0,
+            },
+        )
+        delta = 1.0 if positive else -1.0
+        action_state["score"] = float(action_state.get("score", 0.0)) + delta
+        if positive:
+            action_state["auto_positive"] = int(action_state.get("auto_positive", 0)) + 1
+        else:
+            action_state["auto_negative"] = int(action_state.get("auto_negative", 0)) + 1
+        insight = f"auto_feedback_{'positivo' if positive else 'negativo'}: {reason}"
+        action_state["insights"] = list(action_state.get("insights", [])) + [insight]
+        if len(action_state["insights"]) > 20:
+            action_state["insights"] = action_state["insights"][-20:]
+        action_state["last_command"] = command
+        action_state["last_summary"] = summary
+        return action_state
+
     def _update_procedure_states(
         self,
         *,
@@ -276,6 +336,7 @@ class ObsidianMemory:
                     "last_summary": "",
                     "actions": {},
                     "concepts": {},
+                    "score": 0.0,
                 },
             )
 
@@ -420,6 +481,12 @@ class ObsidianMemory:
                 astate["insights"] = list(astate.get("insights", [])) + [insight]
                 if len(astate["insights"]) > 20:
                     astate["insights"] = astate["insights"][-20:]
+                if positive:
+                    astate["score"] = float(astate.get("score", 0.0)) + 1.0
+                    astate["auto_positive"] = int(astate.get("auto_positive", 0)) + 1
+                else:
+                    astate["score"] = float(astate.get("score", 0.0)) - 1.0
+                    astate["auto_negative"] = int(astate.get("auto_negative", 0)) + 1
 
                 learning_note = self._learning_path(action)
                 self._ensure_header(learning_note, f"Acao Minecraft: {action}", "learning", "minecraft,learning")
@@ -446,10 +513,12 @@ class ObsidianMemory:
                     pdata["ok"] = int(pdata.get("ok", 0)) + 1
                     pdata["ok_streak"] = int(pdata.get("ok_streak", 0)) + 1
                     pdata["fail_streak"] = 0
+                    pdata["score"] = float(pdata.get("score", 0.0)) + 1.0
                 else:
                     pdata["fail"] = int(pdata.get("fail", 0)) + 1
                     pdata["fail_streak"] = int(pdata.get("fail_streak", 0)) + 1
                     pdata["ok_streak"] = 0
+                    pdata["score"] = float(pdata.get("score", 0.0)) - 1.0
                 pdata["last_status"] = f"feedback_{signal}"
                 pdata["last_summary"] = feedback
 
@@ -477,7 +546,9 @@ class ObsidianMemory:
         success_rate = ok / max(1.0, ok + fail)
         confidence = min(1.0, total / 8.0)
         streak_penalty = min(0.5, float(data.get("fail_streak", 0)) * 0.12)
-        score = (success_rate * 2.0 + confidence) - streak_penalty
+        learned_score = float(data.get("score", 0.0))
+        learned_boost = max(-0.9, min(0.9, learned_score * 0.08))
+        score = (success_rate * 2.0 + confidence + learned_boost) - streak_penalty
         q = (query_text or "").lower()
         if q and pid in q:
             score += 0.2
@@ -512,7 +583,7 @@ class ObsidianMemory:
             last_action = str(data.get("last_action", "")).strip()
             last_summary = str(data.get("last_summary", "")).strip()
             lines.append(
-                f"- procedure={pid} | ok={ok} fail={fail} fail_streak={fs} | ultima_acao={last_action} | ultimo={last_summary}"
+                f"- procedure={pid} | ok={ok} fail={fail} fail_streak={fs} | score={float(data.get('score', 0.0)):.1f} | ultima_acao={last_action} | ultimo={last_summary}"
             )
         if not lines:
             return ""
@@ -549,7 +620,7 @@ class ObsidianMemory:
             fail_streak = int(data.get("fail_streak", 0))
             last_summary = str(data.get("last_summary", "")).strip()
             lines.append(
-                f"- acao={action} | ok={ok} fail={fail} fail_streak={fail_streak} | ultimo={last_summary}"
+                f"- acao={action} | ok={ok} fail={fail} fail_streak={fail_streak} | score={float(data.get('score', 0.0)):.1f} | ultimo={last_summary}"
             )
             insights = data.get("insights", [])
             if insights:
@@ -558,6 +629,73 @@ class ObsidianMemory:
         if not lines:
             return ""
         return "Aprendizados recentes de execucao no Minecraft:\n" + "\n".join(lines)
+
+    def _infer_auto_feedback(self, *, status: str, action: str, summary: str):
+        action = _slug(action or "unknown")
+        if action in {"unknown", "command_parser", "planner_invalid", "planner_error", "command_error", "negotiation"}:
+            return None
+
+        low = (summary or "").lower()
+        if self._is_success(status):
+            return {"positive": True, "reason": f"execucao concluida ({status})"}
+        if self._is_failure(status):
+            return {"positive": False, "reason": f"falha de execucao ({status})"}
+
+        neg_hints = [
+            "nao consegui",
+            "não consegui",
+            "erro",
+            "falha",
+            "sem receita",
+            "faltou",
+            "nao encontrado",
+            "não encontrado",
+            "sem espaco",
+            "sem espaço",
+        ]
+        pos_hints = [
+            "concluido",
+            "concluído",
+            "pronto",
+            "deu certo",
+            "coletado",
+            "coletada",
+            "craft",
+            "coloquei",
+            "interagi",
+            "vou atacar",
+            "partiu cacar",
+            "partiu caçar",
+        ]
+
+        if any(h in low for h in neg_hints):
+            return {"positive": False, "reason": "resposta indica falha pratica"}
+        if any(h in low for h in pos_hints):
+            return {"positive": True, "reason": "resposta indica progresso"}
+        return None
+
+    def _append_auto_feedback_history(
+        self,
+        *,
+        user: str,
+        action: str,
+        positive: bool,
+        reason: str,
+        command: str,
+    ):
+        hist = self._state.setdefault("auto_feedback", {}).setdefault("history", [])
+        hist.append(
+            {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "user": user,
+                "action": action,
+                "signal": "positivo" if positive else "negativo",
+                "reason": reason,
+                "command": command[:180],
+            }
+        )
+        if len(hist) > 200:
+            self._state["auto_feedback"]["history"] = hist[-200:]
 
     def record_minecraft_event(
         self,
@@ -659,13 +797,63 @@ class ObsidianMemory:
                 command=command,
                 summary=summary,
             )
+            # reforco automatico por acao para parecer "aprendizado por tentativa/erro"
+            fb = self._infer_auto_feedback(status=status, action=action, summary=summary)
+            if fb:
+                positive = bool(fb.get("positive"))
+                reason = str(fb.get("reason", "")).strip() or "sinal automatico"
+                updated = self._reinforce_action_state(
+                    action=action,
+                    positive=positive,
+                    reason=reason,
+                    command=command,
+                    summary=summary,
+                )
+                score = float(updated.get("score", 0.0))
+                signal = "positivo" if positive else "negativo"
+                self._append_line(
+                    learning_note,
+                    f"- {date} {ts} | auto_reforco_{signal} | score={score:.1f} | motivo={reason}",
+                )
+                self._append_line(
+                    review_note,
+                    f"- {date} {ts} | auto_reforco_{signal} | score={score:.1f} | motivo={reason}",
+                )
+                for pid in procedure_ids:
+                    pdata = self._state["procedures"].setdefault(
+                        pid,
+                        {
+                            "ok": 0,
+                            "fail": 0,
+                            "neutral": 0,
+                            "fail_streak": 0,
+                            "ok_streak": 0,
+                            "last_status": "",
+                            "last_action": "",
+                            "last_command": "",
+                            "last_summary": "",
+                            "actions": {},
+                            "concepts": {},
+                            "score": 0.0,
+                        },
+                    )
+                    delta = 1.0 if positive else -1.0
+                    pdata["score"] = float(pdata.get("score", 0.0)) + delta
+                self._append_auto_feedback_history(
+                    user=user,
+                    action=action,
+                    positive=positive,
+                    reason=reason,
+                    command=command,
+                )
 
             ok = int(action_state.get("ok", 0))
             fail = int(action_state.get("fail", 0))
             fail_streak = int(action_state.get("fail_streak", 0))
+            score = float(action_state.get("score", 0.0))
             self._append_line(
                 review_note,
-                f"- metricas: ok={ok} fail={fail} fail_streak={fail_streak}",
+                f"- metricas: ok={ok} fail={fail} fail_streak={fail_streak} score={score:.1f}",
             )
 
             insights = action_state.get("insights", [])

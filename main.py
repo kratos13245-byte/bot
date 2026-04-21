@@ -71,6 +71,10 @@ MC_NARRATION_INTERVAL_SEC = float(os.getenv("MC_NARRATION_INTERVAL_SEC", "5"))
 MC_NARRATION_COOLDOWN_SEC = float(os.getenv("MC_NARRATION_COOLDOWN_SEC", "28"))
 MC_NARRATION_TO_CHAT = os.getenv("MC_NARRATION_TO_CHAT", "1") == "1"
 MC_NARRATION_TO_TTS = os.getenv("MC_NARRATION_TO_TTS", "0") == "1"
+MC_SELF_TRAIN_ENABLED_DEFAULT = os.getenv("MC_SELF_TRAIN_ENABLED", "0") == "1"
+MC_SELF_TRAIN_INTERVAL_SEC = float(os.getenv("MC_SELF_TRAIN_INTERVAL_SEC", "35"))
+MC_SELF_TRAIN_IDLE_GRACE_SEC = float(os.getenv("MC_SELF_TRAIN_IDLE_GRACE_SEC", "20"))
+MC_SELF_TRAIN_TO_CHAT = os.getenv("MC_SELF_TRAIN_TO_CHAT", "0") == "1"
 MC_CHAT_QUEUE_MAX = int(os.getenv("MC_CHAT_QUEUE_MAX", "150"))
 MC_LATEST_COMMAND_WINS = os.getenv("MC_LATEST_COMMAND_WINS", "1") == "1"
 MC_STOP_ON_NEW_COMMAND = os.getenv("MC_STOP_ON_NEW_COMMAND", "0") == "1"
@@ -110,6 +114,9 @@ ALLOWED_MC_ACTIONS = {
     "find_biome",
     "find_resource",
     "mine",
+    "attack_entity",
+    "hunt",
+    "stop_attack",
     "collect_for_item",
     "craft_tool",
     "drop_item",
@@ -140,6 +147,13 @@ mc = MinecraftBridge()
 mc_narracao_ativa = MC_NARRATION_ENABLED_DEFAULT
 mc_narracao_stop = threading.Event()
 mc_narracao_thread = None
+mc_self_train_ativo = MC_SELF_TRAIN_ENABLED_DEFAULT
+mc_self_train_stop = threading.Event()
+mc_self_train_thread = None
+mc_self_train_guard = {
+    "last_goal": "",
+    "last_ts": 0.0,
+}
 mc_chat_queue = queue.Queue(maxsize=max(10, MC_CHAT_QUEUE_MAX))
 mc_chat_worker_stop = threading.Event()
 mc_chat_worker_thread = None
@@ -198,6 +212,7 @@ def _is_minecraft_command_message(text: str) -> bool:
         r"\b(?:coloca|coloque|poe|põe|posiciona)\b",
         r"\b(?:interage|interagir|usa|use|abre|abrir)\b",
         r"\b(?:combate|loot|sobrevivencia)\b",
+        r"\b(?:ataca|ataque|mata|caca|caça|caçar|cacar|hunt|hunta)\b",
     ]
     return any(re.search(p, msg) for p in patterns)
 
@@ -380,6 +395,46 @@ def _compute_action_block_sec(signature: str) -> float:
     dur = min(dur, MC_ACTION_MAX_BLOCK_SEC)
     mc_planner_guard["block_level"][signature] = min(level + 1, 12)
     return float(dur)
+
+
+def _build_self_train_goal() -> str:
+    goals = [
+        "explore por perto e me diga se encontrou algo util",
+        "colete materiais para crafting_table",
+        "colete materiais para wooden_pickaxe",
+        "mine cobblestone x12",
+        "cace um mob passivo por perto",
+        "ataque um mob hostil se houver por perto",
+        "organize inventario largando lixo se necessario",
+        "coloque um bloco util no chao se tiver espaco",
+    ]
+    # Evita repetir o mesmo objetivo em sequencia.
+    pool = [g for g in goals if g != mc_self_train_guard["last_goal"]] or goals
+    return random.choice(pool)
+
+
+def _infer_procedure_ids_for_command(text: str, top_k: int = 3) -> list[str]:
+    try:
+        notes = buscar_procedures(text, top_k=max(1, int(top_k or 1)) * 2)
+        if not notes:
+            return []
+        ranked_ids = obsidian_memory.rank_procedure_ids(
+            [n.id_ for n in notes],
+            query_text=text,
+        )
+        out = []
+        seen = set()
+        for pid in ranked_ids:
+            p = str(pid or "").strip().lower()
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+            if len(out) >= max(1, int(top_k or 1)):
+                break
+        return out
+    except Exception:
+        return []
 
 
 def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None):
@@ -646,6 +701,52 @@ def iniciar_narracao_minecraft():
     return thread
 
 
+def iniciar_self_train_minecraft():
+    def runner():
+        while not mc_self_train_stop.is_set():
+            if not mc_self_train_ativo or not mc.enabled:
+                mc_self_train_stop.wait(MC_SELF_TRAIN_INTERVAL_SEC)
+                continue
+
+            now = time.time()
+            # Se tem conversa recente, prioridade total para humano.
+            if (now - float(ultimo_input)) < MC_SELF_TRAIN_IDLE_GRACE_SEC:
+                mc_self_train_stop.wait(2.0)
+                continue
+            # Se chegou comando no chat do MC, nao competir.
+            if not mc_chat_queue.empty():
+                mc_self_train_stop.wait(2.0)
+                continue
+            # Evita disputar o lock com resposta de voz/chat.
+            if process_lock.locked():
+                mc_self_train_stop.wait(2.0)
+                continue
+
+            goal = _build_self_train_goal()
+            mc_self_train_guard["last_goal"] = goal
+            mc_self_train_guard["last_ts"] = now
+
+            try:
+                print(f"[MC TREINO] objetivo: {goal}")
+                result = _tentar_acao_planejada_minecraft(
+                    "iara_auto",
+                    goal,
+                    enviar_chat=mc.send_chat if MC_SELF_TRAIN_TO_CHAT else None,
+                )
+                if result:
+                    print(f"[MC TREINO] {result.get('texto', '').strip()}")
+                else:
+                    print("[MC TREINO] sem acao clara para esse objetivo.")
+            except Exception as e:
+                print(f"[MC TREINO] falha ao executar objetivo: {e}")
+
+            mc_self_train_stop.wait(MC_SELF_TRAIN_INTERVAL_SEC)
+
+    thread = threading.Thread(target=runner, daemon=True, name="mc-self-train-thread")
+    thread.start()
+    return thread
+
+
 def iniciar_worker_chat_minecraft():
     def runner():
         while not mc_chat_worker_stop.is_set():
@@ -745,13 +846,16 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
 
         if cmd_result.get("handled"):
             resumo = str(cmd_result.get("summary", "Comando executado.")).strip()
+            action_name = str(cmd_result.get("action", "command_parser")).strip() or "command_parser"
+            proc_ids = _infer_procedure_ids_for_command(entrada, top_k=3)
             print(f"[MINECRAFT ACTION] {resumo}")
             obsidian_memory.record_minecraft_event(
                 user=autor,
                 command=entrada,
                 status="command_ok",
                 summary=resumo,
-                action="command_parser",
+                action=action_name,
+                procedure_ids=proc_ids,
             )
             if enviar_chat:
                 try:
@@ -934,11 +1038,16 @@ def iniciar_twitch_em_background():
 
 
 def encerrar_avatar():
-    global mc_narracao_thread, mc_chat_worker_thread
+    global mc_narracao_thread, mc_chat_worker_thread, mc_self_train_thread
     mc_narracao_stop.set()
     if mc_narracao_thread and mc_narracao_thread.is_alive():
         with suppress(Exception):
             mc_narracao_thread.join(timeout=2)
+
+    mc_self_train_stop.set()
+    if mc_self_train_thread and mc_self_train_thread.is_alive():
+        with suppress(Exception):
+            mc_self_train_thread.join(timeout=2)
 
     mc_chat_worker_stop.set()
     if mc_chat_worker_thread and mc_chat_worker_thread.is_alive():
@@ -962,7 +1071,7 @@ def encerrar_avatar():
 
 print("IA iniciada")
 print(f"Modo Minecraft: {MC_RUNTIME_MODE}")
-print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao off | /visao status | /visao agora | /mc status | /mc cmd <comando> | /mc ai <ordem> | /mc narracao on|off | /testeanim | /sair")
+print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao off | /visao status | /visao agora | /mc status | /mc cmd <comando> | /mc ai <ordem> | /mc narracao on|off | /mc treino on|off|status | /testeanim | /sair")
 print(f"No /mic-live: diga '{COMANDO_DORMIR}' para pausar e '{COMANDO_ACORDAR}' para voltar.")
 print("Atalhos de voz: 'cala a boca iara' (pausa) e 'escuta aqui iara' (retoma).")
 
@@ -1016,6 +1125,8 @@ if mc.enabled:
         print("[MINECRAFT] Integracao com chat iniciada em background.")
         mc_narracao_thread = iniciar_narracao_minecraft()
         print(f"[MINECRAFT] Narracao automatica: {'on' if mc_narracao_ativa else 'off'}")
+        mc_self_train_thread = iniciar_self_train_minecraft()
+        print(f"[MINECRAFT] Auto-treino: {'on' if mc_self_train_ativo else 'off'}")
     except Exception as e:
         print(f"[MINECRAFT] Bridge indisponivel: {e}")
 
@@ -1168,6 +1279,21 @@ while True:
             if entrada in {"/mc narracao on", "/mc narracao off"}:
                 mc_narracao_ativa = entrada.endswith("on")
                 print(f"[MINECRAFT] Narracao {'ativada' if mc_narracao_ativa else 'desativada'}.")
+                continue
+
+            if entrada in {"/mc treino on", "/mc treino off", "/mc treino status"}:
+                if entrada.endswith("status"):
+                    last_goal = str(mc_self_train_guard.get("last_goal", "")).strip() or "-"
+                    last_ts = float(mc_self_train_guard.get("last_ts", 0.0))
+                    ago = int(max(0.0, time.time() - last_ts)) if last_ts > 0 else -1
+                    print(
+                        f"[MINECRAFT] Auto-treino={'on' if mc_self_train_ativo else 'off'} "
+                        f"| intervalo={MC_SELF_TRAIN_INTERVAL_SEC}s | ultimo_objetivo={last_goal} "
+                        f"| ultimo_ha={f'{ago}s' if ago >= 0 else '-'}"
+                    )
+                else:
+                    mc_self_train_ativo = entrada.endswith("on")
+                    print(f"[MINECRAFT] Auto-treino {'ativado' if mc_self_train_ativo else 'desativado'}.")
                 continue
 
             if entrada == "/visao off":

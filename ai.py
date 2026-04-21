@@ -412,6 +412,9 @@ Acoes permitidas:
 - find_biome payload: {{"biome":"nome","resource":"opcional"}}
 - find_resource payload: {{"resource":"nome"}}
 - mine payload: {{"resource":"nome","count":int}}
+- attack_entity payload: {{"target":"nome do mob/jogador","max_distance":int}}
+- hunt payload: {{"target":"mob passivo opcional","max_distance":int}}
+- stop_attack payload: {{}}
 - collect_for_item payload: {{"item":"nome","count":int}}
 - craft_tool payload: {{"item":"nome","count":int}}
 - drop_item payload: {{"item":"nome","count":int}}

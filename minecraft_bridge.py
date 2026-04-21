@@ -209,7 +209,7 @@ class MinecraftBridge:
 
         if msg in {"pare", "parar", "stop", "quieta", "fica quieta", "fica de boa", "espera ai"}:
             self.send_action("stop", {})
-            return {"handled": True, "summary": "Parei tudo no Minecraft."}
+            return {"handled": True, "summary": "Parei tudo no Minecraft.", "action": "stop"}
 
         if self._contains_any(
             msg,
@@ -226,7 +226,7 @@ class MinecraftBridge:
             ],
         ):
             self.send_action("stop", {})
-            return {"handled": True, "summary": "Beleza, parei de seguir."}
+            return {"handled": True, "summary": "Beleza, parei de seguir.", "action": "stop"}
 
         if self._contains_any(
             msg,
@@ -242,18 +242,18 @@ class MinecraftBridge:
             ],
         ):
             self.send_action("follow_player", {"player": author})
-            return {"handled": True, "summary": f"Vou seguir {author}."}
+            return {"handled": True, "summary": f"Vou seguir {author}.", "action": "follow_player"}
 
         target = self._extract_follow_target(raw)
         if target:
             self.send_action("follow_player", {"player": target})
-            return {"handled": True, "summary": f"Vou seguir {target}."}
+            return {"handled": True, "summary": f"Vou seguir {target}.", "action": "follow_player"}
 
         coords = self._extract_coordinates(msg)
         if coords:
             x, y, z = coords
             self.send_action("goto", {"x": x, "y": y, "z": z, "range": 2})
-            return {"handled": True, "summary": f"Indo para {x} {y} {z}."}
+            return {"handled": True, "summary": f"Indo para {x} {y} {z}.", "action": "goto"}
 
         if self._contains_any(
             msg,
@@ -270,7 +270,7 @@ class MinecraftBridge:
             ],
         ):
             self.send_action("explore", {"enabled": True})
-            return {"handled": True, "summary": "Ativei exploracao autonoma."}
+            return {"handled": True, "summary": "Ativei exploracao autonoma.", "action": "explore"}
 
         if self._contains_any(
             msg,
@@ -285,9 +285,9 @@ class MinecraftBridge:
         ):
             if "off" in msg or "desativa" in msg or "desliga" in msg:
                 self.send_action("set_adventure", {"enabled": False})
-                return {"handled": True, "summary": "Modo aventura desativado."}
+                return {"handled": True, "summary": "Modo aventura desativado.", "action": "set_adventure"}
             self.send_action("set_adventure", {"enabled": True})
-            return {"handled": True, "summary": "Modo aventura ativado."}
+            return {"handled": True, "summary": "Modo aventura ativado.", "action": "set_adventure"}
 
         if self._contains_any(
             msg,
@@ -300,7 +300,7 @@ class MinecraftBridge:
             ],
         ):
             self.send_action("set_base_here", {})
-            return {"handled": True, "summary": "Base marcada neste ponto."}
+            return {"handled": True, "summary": "Base marcada neste ponto.", "action": "set_base_here"}
 
         if self._contains_any(
             msg,
@@ -314,7 +314,7 @@ class MinecraftBridge:
         ):
             out = self.send_action("inventory_summary", {})
             resumo = str(out.get("summary", "")).strip() or "Nao consegui ler o inventario agora."
-            return {"handled": True, "summary": f"Inventario: {resumo}"}
+            return {"handled": True, "summary": f"Inventario: {resumo}", "action": "inventory_summary"}
 
         if self._contains_any(
             msg,
@@ -328,7 +328,7 @@ class MinecraftBridge:
             ],
         ):
             self.send_action("go_base", {})
-            return {"handled": True, "summary": "Voltando para a base."}
+            return {"handled": True, "summary": "Voltando para a base.", "action": "go_base"}
 
         m = re.search(
             r"(?:craft|faca|faz|cria|monta|construi|construir|transforma|transformar|converter|converte)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
@@ -340,9 +340,9 @@ class MinecraftBridge:
             out = self.send_action("craft_tool", {"item": item, "count": count})
             if out.get("ok"):
                 crafted = int(out.get("crafted", out.get("requested", count)))
-                return {"handled": True, "summary": f"Craft concluido: {out.get('item', item)} x{crafted}."}
+                return {"handled": True, "summary": f"Craft concluido: {out.get('item', item)} x{crafted}.", "action": "craft_tool"}
             err = str(out.get("error", "erro desconhecido")).strip()
-            return {"handled": True, "summary": f"Nao consegui craftar agora: {err}"}
+            return {"handled": True, "summary": f"Nao consegui craftar agora: {err}", "action": "craft_tool"}
 
         m = re.search(
             r"(?:largar|larga|dropar|dropa|joga fora|descarta)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
@@ -354,9 +354,9 @@ class MinecraftBridge:
             out = self.send_action("drop_item", {"item": item, "count": count})
             if out.get("ok"):
                 dropped = int(out.get("dropped", out.get("requested", count)))
-                return {"handled": True, "summary": f"Larguei {out.get('item', item)} x{dropped}."}
+                return {"handled": True, "summary": f"Larguei {out.get('item', item)} x{dropped}.", "action": "drop_item"}
             err = str(out.get("error", "erro desconhecido")).strip()
-            return {"handled": True, "summary": f"Nao consegui largar item: {err}"}
+            return {"handled": True, "summary": f"Nao consegui largar item: {err}", "action": "drop_item"}
 
         m = re.search(
             r"(?:coloca|coloque|por|poe|põe|posiciona)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?(?:\s+(no chao|na frente|aqui))?$",
@@ -370,9 +370,9 @@ class MinecraftBridge:
             out = self.send_action("place_block", {"item": item, "count": count, "position": position})
             if out.get("ok"):
                 placed = int(out.get("placed", out.get("requested", count)))
-                return {"handled": True, "summary": f"Coloquei {out.get('item', item)} x{placed}."}
+                return {"handled": True, "summary": f"Coloquei {out.get('item', item)} x{placed}.", "action": "place_block"}
             err = str(out.get("error", "erro desconhecido")).strip()
-            return {"handled": True, "summary": f"Nao consegui colocar bloco: {err}"}
+            return {"handled": True, "summary": f"Nao consegui colocar bloco: {err}", "action": "place_block"}
 
         m = re.search(
             r"(?:interage|interagir|usa|use|abre|abrir)\s+(?:o|a)?\s*([a-z0-9_\-\s]+)$",
@@ -382,9 +382,9 @@ class MinecraftBridge:
             block = self._sanitize_block_query(m.group(1) or "")
             out = self.send_action("interact_block", {"block": block})
             if out.get("ok"):
-                return {"handled": True, "summary": f"Interagi com {out.get('block', block)}."}
+                return {"handled": True, "summary": f"Interagi com {out.get('block', block)}.", "action": "interact_block"}
             err = str(out.get("error", "erro desconhecido")).strip()
-            return {"handled": True, "summary": f"Nao consegui interagir: {err}"}
+            return {"handled": True, "summary": f"Nao consegui interagir: {err}", "action": "interact_block"}
 
         if self._contains_any(
             msg,
@@ -399,7 +399,7 @@ class MinecraftBridge:
             ],
         ):
             self.send_action("explore", {"enabled": False})
-            return {"handled": True, "summary": "Parei a exploracao autonoma."}
+            return {"handled": True, "summary": "Parei a exploracao autonoma.", "action": "explore"}
 
         m = re.search(
             r"(?:va ate|vai ate|v ate|procura|busca).*(?:bioma)\s+([a-z0-9_\-\s]+?)(?:\s+e\s+(?:procura|busca)\s+([a-z0-9_\-\s]+))?$",
@@ -411,20 +411,60 @@ class MinecraftBridge:
             resource = (m.group(2) or "").strip()
             self.send_action("find_biome", {"biome": biome, "resource": resource})
             if resource:
-                return {"handled": True, "summary": f"Vou ate o bioma {biome} e procuro {resource}."}
-            return {"handled": True, "summary": f"Vou procurar o bioma {biome}."}
+                return {"handled": True, "summary": f"Vou ate o bioma {biome} e procuro {resource}.", "action": "find_biome"}
+            return {"handled": True, "summary": f"Vou procurar o bioma {biome}.", "action": "find_biome"}
 
         m = re.search(r"(?:vai|va|ir)\s+(?:pro|para o|para)\s+bioma\s+([a-z0-9_\-\s]+)$", msg)
         if m:
             biome = (m.group(1) or "").strip()
             self.send_action("find_biome", {"biome": biome, "resource": ""})
-            return {"handled": True, "summary": f"Vou procurar o bioma {biome}."}
+            return {"handled": True, "summary": f"Vou procurar o bioma {biome}.", "action": "find_biome"}
 
         m = re.search(r"(?:procura|busca|acha|encontra)\s+(?:por\s+)?([a-z0-9_\-\s]+)$", msg, flags=re.IGNORECASE)
         if m:
             resource = (m.group(1) or "").strip()
             self.send_action("find_resource", {"resource": resource})
-            return {"handled": True, "summary": f"Vou procurar {resource} por perto."}
+            return {"handled": True, "summary": f"Vou procurar {resource} por perto.", "action": "find_resource"}
+
+        if self._contains_any(
+            msg,
+            [
+                "para de atacar",
+                "pare de atacar",
+                "stop ataque",
+                "para caca",
+                "pare de cacar",
+                "pare de caçar",
+            ],
+        ):
+            self.send_action("stop_attack", {})
+            return {"handled": True, "summary": "Parei de atacar/cacar.", "action": "stop_attack"}
+
+        m = re.search(
+            r"(?:ataca|ataque|bate|foca|mata)\s+(?:o|a)?\s*([a-z0-9_\-\s]+)$",
+            msg,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            target = (m.group(1) or "").strip()
+            out = self.send_action("attack_entity", {"target": target, "max_distance": 28})
+            if out.get("ok"):
+                return {"handled": True, "summary": f"Vou atacar {target}.", "action": "attack_entity"}
+            err = str(out.get("error", "erro desconhecido")).strip()
+            return {"handled": True, "summary": f"Nao consegui iniciar ataque: {err}", "action": "attack_entity"}
+
+        m = re.search(
+            r"(?:caca|caça|cacar|caçar|hunta|hunt)\s*(?:o|a)?\s*([a-z0-9_\-\s]+)?$",
+            msg,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            target = (m.group(1) or "").strip()
+            out = self.send_action("hunt", {"target": target, "max_distance": 28})
+            if out.get("ok"):
+                return {"handled": True, "summary": f"Partiu cacar {target or 'mob passivo'} por perto.", "action": "hunt"}
+            err = str(out.get("error", "erro desconhecido")).strip()
+            return {"handled": True, "summary": f"Nao consegui iniciar caca: {err}", "action": "hunt"}
 
         m = re.search(
             r"(?:mine|minera|minerar|quebra|coleta)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
@@ -434,7 +474,7 @@ class MinecraftBridge:
             resource = (m.group(1) or "").strip()
             count = int(m.group(2) or "1")
             self.send_action("mine", {"resource": resource, "count": count})
-            return {"handled": True, "summary": f"Vou minerar {resource} x{count}."}
+            return {"handled": True, "summary": f"Vou minerar {resource} x{count}.", "action": "mine"}
 
         m = re.search(
             r"(?:colet[ea]|junta|junte|farm|farma|pegue|pega)\s+(?:materiais|recursos)\s+(?:pra|para)\s+([a-z0-9_\-\s]+?)(?:\s+(?:x|por)?\s*(\d+))?$",
@@ -447,41 +487,42 @@ class MinecraftBridge:
             out = self.send_action("collect_for_item", {"item": item, "count": count})
             if out.get("ok"):
                 if out.get("done"):
-                    return {"handled": True, "summary": f"Ja temos materiais para {out.get('item', item)}."}
+                    return {"handled": True, "summary": f"Ja temos materiais para {out.get('item', item)}.", "action": "collect_for_item"}
                 nxt = str(out.get("next_resource", "material")).strip()
                 missing = int(out.get("missing", count))
                 return {
                     "handled": True,
                     "summary": f"Fechou. Vou coletar {nxt} x{missing} para fazer {out.get('item', item)}.",
+                    "action": "collect_for_item",
                 }
             err = str(out.get("error", "erro desconhecido")).strip()
-            return {"handled": True, "summary": f"Nao consegui iniciar coleta de materiais: {err}"}
+            return {"handled": True, "summary": f"Nao consegui iniciar coleta de materiais: {err}", "action": "collect_for_item"}
 
         if self._contains_any(
             msg,
             ["combate on", "ativar combate", "liga combate", "combate ligado", "auto combate on"],
         ):
             self.send_action("set_combat", {"enabled": True})
-            return {"handled": True, "summary": "Combate automatico ativado."}
+            return {"handled": True, "summary": "Combate automatico ativado.", "action": "set_combat"}
         if self._contains_any(
             msg,
             ["combate off", "desativar combate", "desliga combate", "combate desligado", "auto combate off"],
         ):
             self.send_action("set_combat", {"enabled": False})
-            return {"handled": True, "summary": "Combate automatico desativado."}
+            return {"handled": True, "summary": "Combate automatico desativado.", "action": "set_combat"}
 
         if self._contains_any(msg, ["loot on", "ativar loot", "liga loot", "loot ligado"]):
             self.send_action("set_loot", {"enabled": True})
-            return {"handled": True, "summary": "Loot automatico ativado."}
+            return {"handled": True, "summary": "Loot automatico ativado.", "action": "set_loot"}
         if self._contains_any(msg, ["loot off", "desativar loot", "desliga loot", "loot desligado"]):
             self.send_action("set_loot", {"enabled": False})
-            return {"handled": True, "summary": "Loot automatico desativado."}
+            return {"handled": True, "summary": "Loot automatico desativado.", "action": "set_loot"}
 
         if self._contains_any(msg, ["sobrevivencia on", "ativar sobrevivencia", "liga sobrevivencia"]):
             self.send_action("set_survival", {"enabled": True})
-            return {"handled": True, "summary": "Modo sobrevivencia ativado."}
+            return {"handled": True, "summary": "Modo sobrevivencia ativado.", "action": "set_survival"}
         if self._contains_any(msg, ["sobrevivencia off", "desativar sobrevivencia", "desliga sobrevivencia"]):
             self.send_action("set_survival", {"enabled": False})
-            return {"handled": True, "summary": "Modo sobrevivencia desativado."}
+            return {"handled": True, "summary": "Modo sobrevivencia desativado.", "action": "set_survival"}
 
         return {"handled": False}

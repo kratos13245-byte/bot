@@ -52,11 +52,16 @@ let mcData = null;
 let autoTimer = null;
 
 const state = {
-  mode: "idle", // idle | follow | goto | explore | adventure | find_biome | find_resource | mine
+  mode: "idle", // idle | follow | goto | explore | adventure | find_biome | find_resource | mine | attack
   followTarget: "",
   goto: null,
   biomeTarget: "",
   resourceTarget: "",
+  attackTarget: "",
+  attackMaxDistance: 28,
+  attackPassiveOnly: false,
+  attackOnce: false,
+  attackMisses: 0,
   lootEnabled: true,
   combatEnabled: true,
   survivalEnabled: true,
@@ -117,6 +122,22 @@ function isHostileMob(entity) {
   return hostile.some((h) => name.includes(h));
 }
 
+function isPassiveMob(entity) {
+  if (!entity || entity.type !== "mob") return false;
+  const name = normalizeText(entity.name || entity.displayName || "");
+  const passive = [
+    "sheep",
+    "cow",
+    "pig",
+    "chicken",
+    "rabbit",
+    "mooshroom",
+    "cod",
+    "salmon",
+  ];
+  return passive.some((p) => name.includes(p));
+}
+
 function _setModeIdle() {
   state.mode = "idle";
   state.lastMode = "idle";
@@ -125,6 +146,11 @@ function _setModeIdle() {
   state.goto = null;
   state.biomeTarget = "";
   state.resourceTarget = "";
+  state.attackTarget = "";
+  state.attackMaxDistance = 28;
+  state.attackPassiveOnly = false;
+  state.attackOnce = false;
+  state.attackMisses = 0;
   state.searchMisses = 0;
   state.mineMisses = 0;
   state.miningTarget = "";
@@ -152,6 +178,7 @@ function _setMode(newMode) {
   state.lastMode = m;
   state.modeSinceTs = Date.now();
   state.searchMisses = 0;
+  state.attackMisses = 0;
 }
 
 function _distance3(a, b) {
@@ -825,6 +852,33 @@ function _nearestHostileInRange(range) {
     .sort((a, b) => a.d - b.d)[0];
 }
 
+function _nearestEntityByQuery(query, maxDistance = 28, passiveOnly = false) {
+  const q = normalizeText(query || "");
+  const p = bot?.entity?.position;
+  if (!p) return null;
+
+  const entities = Object.values(bot.entities || {})
+    .filter((e) => e && e.position && e !== bot.entity)
+    .filter((e) => e.type === "mob" || e.type === "player")
+    .filter((e) => {
+      if (!passiveOnly) return true;
+      return isPassiveMob(e);
+    })
+    .map((e) => ({
+      e,
+      d: p.distanceTo(e.position),
+      n: normalizeText(e.username || e.name || e.displayName || ""),
+    }))
+    .filter((x) => Number.isFinite(x.d) && x.d <= maxDistance);
+
+  if (!entities.length) return null;
+  if (!q || q === "mob" || q === "alvo" || q === "enemy" || q === "hostil") {
+    return entities.sort((a, b) => a.d - b.d)[0];
+  }
+  const match = entities.filter((x) => x.n.includes(q)).sort((a, b) => a.d - b.d)[0];
+  return match || null;
+}
+
 function _tryFleeIfLowHealth() {
   if (!state.survivalEnabled) return false;
   if (Number(bot.health || 0) > MC_LOW_HEALTH) return false;
@@ -1043,6 +1097,37 @@ function setCombat(enabled = true) {
   return { ok: true, action: "combat", enabled: state.combatEnabled };
 }
 
+function startAttack(target = "", opts = {}) {
+  if (!bot?.pathfinder) return { ok: false, error: "pathfinder offline" };
+  const t = String(target || "").trim();
+  _setMode("attack");
+  state.attackTarget = t;
+  state.attackMaxDistance = Number(opts.maxDistance || 28) || 28;
+  state.attackPassiveOnly = !!opts.passiveOnly;
+  state.attackOnce = !!opts.once;
+  state.attackMisses = 0;
+  return {
+    ok: true,
+    action: "attack_entity",
+    target: state.attackTarget || "(mais proximo)",
+    passive_only: state.attackPassiveOnly,
+    once: state.attackOnce,
+  };
+}
+
+function startHunt(target = "", maxDistance = 28) {
+  const t = String(target || "").trim();
+  return startAttack(t, { maxDistance, passiveOnly: true, once: false });
+}
+
+function stopAttack() {
+  if (state.mode === "attack") {
+    _setModeIdle();
+    return { ok: true, action: "stop_attack", stopped: true };
+  }
+  return { ok: true, action: "stop_attack", stopped: false };
+}
+
 function setLoot(enabled = true) {
   state.lootEnabled = !!enabled;
   return { ok: true, action: "loot", enabled: state.lootEnabled };
@@ -1202,6 +1287,50 @@ async function runAutonomyTick() {
   if (_tryFleeIfLowHealth()) return;
   await _tryEatIfNeeded();
   if (await _tryMaintainSurvivalStock()) return;
+
+  if (state.mode === "attack") {
+    const maxDistance = Number(state.attackMaxDistance || 28) || 28;
+    const target = _nearestEntityByQuery(state.attackTarget, maxDistance, state.attackPassiveOnly);
+    if (!target) {
+      state.attackMisses += 1;
+      const p = bot.entity.position;
+      const roam = Math.max(12, Math.min(32, MC_SEARCH_ROAM_RADIUS));
+      const tx = p.x + (Math.random() * roam * 2 - roam);
+      const tz = p.z + (Math.random() * roam * 2 - roam);
+      _setGoalStable(new goals.GoalNear(tx, p.y, tz, 3), `attack_roam:${Math.round(tx)}:${Math.round(p.y)}:${Math.round(tz)}`, false);
+      if (state.attackMisses > 10) {
+        pushEvent("attack_timeout", { target: state.attackTarget || "(nearest)", passive_only: state.attackPassiveOnly });
+        _setModeIdle();
+      }
+      return;
+    }
+
+    state.attackMisses = 0;
+    const dist = Number(target.d || 999);
+    const ent = target.e;
+    if (dist > 3.2) {
+      const pos = ent.position;
+      _setGoalStable(new goals.GoalNear(pos.x, pos.y, pos.z, 2), `attack_target:${Math.round(pos.x)}:${Math.round(pos.y)}:${Math.round(pos.z)}`, true);
+      return;
+    }
+
+    const now = Date.now();
+    if (now - state.lastCombatTs < 700) return;
+    try {
+      await _equipBestWeapon();
+      await bot.lookAt(ent.position.offset(0, 1.0, 0), true);
+      bot.attack(ent);
+      state.lastCombatTs = now;
+      pushEvent("attack_hit", {
+        target: normalizeText(ent.username || ent.name || ent.displayName || "entity"),
+        passive_only: state.attackPassiveOnly,
+      });
+      if (state.attackOnce) _setModeIdle();
+    } catch (_e) {
+      // retry next tick
+    }
+    return;
+  }
 
   if (state.combatEnabled) {
     const now = Date.now();
@@ -1509,6 +1638,28 @@ function maybeHandleIngameCommand(username, rawMessage) {
     return;
   }
 
+  const attackCmd = msg.match(/^(?:ataca|ataque|bate|foca|mata)\s+(?:o|a)?\s*([a-z0-9_\-\s]+)$/i);
+  if (attackCmd) {
+    const target = (attackCmd[1] || "").trim();
+    const out = startAttack(target, { maxDistance: 28, passiveOnly: false, once: false });
+    if (out.ok) bot.chat(`Beleza, vou atacar ${target}.`);
+    else bot.chat(`Nao consegui iniciar ataque: ${out.error}`);
+    return;
+  }
+  const huntCmd = msg.match(/^(?:caca|caça|cacar|caçar|hunta|hunt)\s*(?:o|a)?\s*([a-z0-9_\-\s]+)?$/i);
+  if (huntCmd) {
+    const target = (huntCmd[1] || "").trim();
+    const out = startHunt(target, 28);
+    if (out.ok) bot.chat(`Partiu cacar ${target || "mob passivo"} por perto.`);
+    else bot.chat(`Nao consegui iniciar caca: ${out.error}`);
+    return;
+  }
+  if (msg === "pare de atacar" || msg === "para de atacar" || msg === "stop ataque" || msg === "para caca" || msg === "pare de cacar") {
+    const out = stopAttack();
+    bot.chat(out.stopped ? "Parei de atacar." : "Eu nem tava atacando.");
+    return;
+  }
+
   const mineCmd = msg.match(/^mine\s+([a-z0-9_\-\s]+?)(?:\s+(\d+))?$/i);
   if (mineCmd) {
     const resource = (mineCmd[1] || "").trim();
@@ -1681,6 +1832,19 @@ app.post("/action", async (req, res) => {
       break;
     case "mine":
       out = startMining(String(payload.resource || ""), Number(payload.count || 1));
+      break;
+    case "attack_entity":
+      out = startAttack(String(payload.target || ""), {
+        maxDistance: Number(payload.max_distance || 28),
+        passiveOnly: payload.passive_only === true,
+        once: payload.once === true,
+      });
+      break;
+    case "hunt":
+      out = startHunt(String(payload.target || ""), Number(payload.max_distance || 28));
+      break;
+    case "stop_attack":
+      out = stopAttack();
       break;
     case "collect_for_item":
       out = collectMaterialsForItem(String(payload.item || ""), Number(payload.count || 1));
