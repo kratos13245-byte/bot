@@ -77,6 +77,20 @@ Regra de identidade:
 EMOCAO_PADRAO = "normal"
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)).strip())
+    except Exception:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)).strip())
+    except Exception:
+        return default
+
+
 def limpar_json_resposta(conteudo: str) -> str:
     conteudo = conteudo.strip()
     if conteudo.startswith("```"):
@@ -138,7 +152,8 @@ def _instrucao_palavroes():
     if nivel == "alto":
         return (
             "Palavroes estao liberados para manter o tom caotico da personagem. "
-            "Pode usar linguagem bem informal e provocadora, sem incentivo a violencia real."
+            "Pode usar linguagem bem informal e provocadora, com palavrao ocasional (nao em toda frase), "
+            "sem incentivo a violencia real."
         )
 
     return (
@@ -258,13 +273,24 @@ def _montar_mensagens_base(prompt_usuario: str):
 
 
 def _chat_completion_content(mensagens, *, temperature=0.85, max_tokens=320, timeout=120):
+    top_p = _env_float("AI_TOP_P", 0.95)
+    repeat_penalty = _env_float("AI_REPEAT_PENALTY", 1.12)
+    top_k = _env_int("AI_TOP_K", 80)
+    min_p = _env_float("AI_MIN_P", 0.05)
+    presence_penalty = _env_float("AI_PRESENCE_PENALTY", 0.10)
+    frequency_penalty = _env_float("AI_FREQUENCY_PENALTY", 0.05)
+
     payload = {
         "model": os.getenv("AI_MODEL", "local-model"),
         "messages": mensagens,
         "temperature": temperature,
-        "top_p": 0.95,
+        "top_p": top_p,
+        "top_k": top_k,
+        "min_p": min_p,
+        "presence_penalty": presence_penalty,
+        "frequency_penalty": frequency_penalty,
         "max_tokens": max_tokens,
-        "repeat_penalty": 1.12,
+        "repeat_penalty": repeat_penalty,
     }
     resposta = requests.post(_resolver_url_api(), json=payload, timeout=timeout)
     resposta.raise_for_status()
@@ -275,7 +301,12 @@ def _chat_completion_content(mensagens, *, temperature=0.85, max_tokens=320, tim
 def gerar_resposta(prompt_usuario: str) -> dict:
     mensagens = _montar_mensagens_base(prompt_usuario)
     _log_prompt_debug(mensagens, tag="gerar_resposta")
-    conteudo = _chat_completion_content(mensagens, temperature=0.85, max_tokens=320, timeout=120)
+    conteudo = _chat_completion_content(
+        mensagens,
+        temperature=_env_float("AI_TEMP_REPLY", 0.92),
+        max_tokens=_env_int("AI_MAX_TOKENS_REPLY", 320),
+        timeout=120,
+    )
     resultado = extrair_json_seguro(conteudo)
 
     if resultado is not None:
@@ -332,7 +363,12 @@ Formato:
 
     _log_prompt_debug(mensagens, tag="gerar_assunto")
 
-    conteudo = _chat_completion_content(mensagens, temperature=0.95, max_tokens=120, timeout=120)
+    conteudo = _chat_completion_content(
+        mensagens,
+        temperature=_env_float("AI_TEMP_TOPIC", 1.00),
+        max_tokens=_env_int("AI_MAX_TOKENS_TOPIC", 120),
+        timeout=120,
+    )
     resultado = extrair_json_seguro(conteudo)
 
     if resultado is not None:
@@ -398,7 +434,12 @@ Responda SOMENTE JSON valido:
     ]
     _log_prompt_debug(mensagens, tag="planejar_acao_minecraft")
 
-    conteudo = _chat_completion_content(mensagens, temperature=0.2, max_tokens=180, timeout=60)
+    conteudo = _chat_completion_content(
+        mensagens,
+        temperature=_env_float("AI_TEMP_PLANNER", 0.18),
+        max_tokens=_env_int("AI_MAX_TOKENS_PLANNER", 180),
+        timeout=60,
+    )
     data = extrair_json_seguro(conteudo) or {}
     action = str(data.get("action", "none")).strip().lower() or "none"
     payload = data.get("payload", {})
@@ -434,7 +475,12 @@ Formato JSON obrigatorio:
     ]
     _log_prompt_debug(mensagens, tag="gerar_comentario_minecraft")
 
-    conteudo = _chat_completion_content(mensagens, temperature=0.7, max_tokens=80, timeout=45)
+    conteudo = _chat_completion_content(
+        mensagens,
+        temperature=_env_float("AI_TEMP_COMMENTARY", 0.82),
+        max_tokens=_env_int("AI_MAX_TOKENS_COMMENTARY", 80),
+        timeout=45,
+    )
     data = extrair_json_seguro(conteudo) or {}
     texto = str(data.get("texto", "")).strip()
     emocao = validar_emocao(data.get("emocao", EMOCAO_PADRAO))

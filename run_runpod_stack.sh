@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LLAMA_BIN="${LLAMA_BIN:-/workspace/llama.cpp/build/bin/llama-server}"
 LLAMA_MODEL_LOCAL="${LLAMA_MODEL_LOCAL:-/workspace/models/DarkIdol-Llama-3.1-8B-Instruct-1.2-Uncensored-Q4_K_M.gguf}"
-LLAMA_MODEL_HF="${LLAMA_MODEL_HF:-QuantFactory/DarkIdol-Llama-3.1-8B-Instruct-1.2-Uncensored-GGUF:Q4_K_M}"
+LLAMA_MODEL_HF="${LLAMA_MODEL_HF:-RavichandranJ/Dolphin3-Cyber-8B-GGUF:Q6_K}"
 LLAMA_HOST="${LLAMA_HOST:-0.0.0.0}"
 LLAMA_PORT="${LLAMA_PORT:-8080}"
 LLAMA_THREADS="${LLAMA_THREADS:-10}"

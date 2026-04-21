@@ -1,5 +1,6 @@
 #nada
 import asyncio
+import json
 import os
 import queue
 import re
@@ -77,6 +78,14 @@ MC_NEGOTIATION_MODE = os.getenv("MC_NEGOTIATION_MODE", "1") == "1"
 MC_NEGOTIATION_PROB = float(os.getenv("MC_NEGOTIATION_PROB", "0.35"))
 MC_NEGOTIATION_COOLDOWN_SEC = float(os.getenv("MC_NEGOTIATION_COOLDOWN_SEC", "20"))
 MC_NEGOTIATION_TTL_SEC = float(os.getenv("MC_NEGOTIATION_TTL_SEC", "120"))
+MC_ACTION_REPEAT_COOLDOWN_SEC = float(os.getenv("MC_ACTION_REPEAT_COOLDOWN_SEC", "8"))
+MC_ACTION_MAX_REPEATS_NO_PROGRESS = int(os.getenv("MC_ACTION_MAX_REPEATS_NO_PROGRESS", "2"))
+MC_ACTION_MAX_FAIL_STREAK = int(os.getenv("MC_ACTION_MAX_FAIL_STREAK", "2"))
+MC_ACTION_BLOCK_SEC = float(os.getenv("MC_ACTION_BLOCK_SEC", "35"))
+MC_ACTION_BLOCK_BACKOFF = float(os.getenv("MC_ACTION_BLOCK_BACKOFF", "1.8"))
+MC_ACTION_MAX_BLOCK_SEC = float(os.getenv("MC_ACTION_MAX_BLOCK_SEC", "180"))
+MC_COMMAND_DEBOUNCE_SEC = float(os.getenv("MC_COMMAND_DEBOUNCE_SEC", "1.8"))
+MC_ANTI_LOOP_FORCE_STOP = os.getenv("MC_ANTI_LOOP_FORCE_STOP", "1") == "1"
 MC_RUNTIME_MODE = os.getenv("MC_RUNTIME_MODE", "quality").strip().lower()
 
 # Perfis de execucao: qualidade (resposta mais rica) vs desempenho (menos carga/latencia).
@@ -135,6 +144,20 @@ mc_chat_worker_stop = threading.Event()
 mc_chat_worker_thread = None
 mc_pending_negotiation_by_user = {}
 mc_last_negotiation_ts = 0.0
+mc_input_guard = {
+    "last_user": "",
+    "last_text": "",
+    "last_ts": 0.0,
+}
+mc_planner_guard = {
+    "last_signature": "",
+    "last_context_fp": "",
+    "repeat_no_progress": 0,
+    "last_action_ts": 0.0,
+    "fail_streak": {},
+    "blocked_until": {},
+    "block_level": {},
+}
 obsidian_memory = ObsidianMemory()
 
 
@@ -299,6 +322,35 @@ def _extrair_evento_minecraft(ctx: dict):
     return ""
 
 
+def _context_fingerprint(ctx: dict) -> str:
+    data = ctx.get("data", {}) if isinstance(ctx, dict) else {}
+    pos = data.get("position") or {}
+    x = int(round(float(pos.get("x", 0)))) if pos else 0
+    y = int(round(float(pos.get("y", 0)))) if pos else 0
+    z = int(round(float(pos.get("z", 0)))) if pos else 0
+    health = data.get("health")
+    food = data.get("food")
+    state_mode = str((data.get("state") or {}).get("mode", "")).strip()
+    inv = str(data.get("inventory_summary", "")).strip()[:120]
+    return f"{x}:{y}:{z}|h={health}|f={food}|m={state_mode}|inv={inv}"
+
+
+def _action_signature(action: str, payload: dict) -> str:
+    try:
+        p = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        p = str(payload or {})
+    return f"{action}|{p}"
+
+
+def _compute_action_block_sec(signature: str) -> float:
+    level = int(mc_planner_guard["block_level"].get(signature, 0))
+    dur = MC_ACTION_BLOCK_SEC * (MC_ACTION_BLOCK_BACKOFF ** level)
+    dur = min(dur, MC_ACTION_MAX_BLOCK_SEC)
+    mc_planner_guard["block_level"][signature] = min(level + 1, 12)
+    return float(dur)
+
+
 def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None):
     if not mc.enabled or not MC_AI_ACTION_PLANNER:
         return None
@@ -314,6 +366,15 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         contexto_procedural = montar_contexto_procedural(entrada, top_k=2)
     except Exception:
         contexto_procedural = ""
+    try:
+        contexto_aprendizado = obsidian_memory.get_learning_context(entrada, top_k=3)
+    except Exception:
+        contexto_aprendizado = ""
+    if contexto_aprendizado:
+        if contexto_procedural:
+            contexto_procedural = f"{contexto_procedural}\n\n{contexto_aprendizado}"
+        else:
+            contexto_procedural = contexto_aprendizado
 
     try:
         plano = planejar_acao_minecraft(
@@ -343,10 +404,74 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
         )
         return None
 
+    now = time.time()
+    signature = _action_signature(action, payload)
+    context_fp = _context_fingerprint(ctx)
+    blocked_until = float(mc_planner_guard["blocked_until"].get(signature, 0.0))
+    if now < blocked_until:
+        restante = int(blocked_until - now + 0.999)
+        feedback = f"Essa acao ({action}) entrou em cooldown anti-loop. Tenta outra por {restante}s."
+        print(f"[MINECRAFT ANTI-LOOP] {feedback}")
+        if enviar_chat:
+            with suppress(Exception):
+                enviar_chat(feedback)
+        return {
+            "texto": feedback,
+            "emocao": "normal",
+            "humor": {"estado": "calma", "paciencia": 6, "delta": 0, "motivo": "anti_loop"},
+        }
+
+    same_sig = signature == mc_planner_guard["last_signature"]
+    same_ctx = context_fp == mc_planner_guard["last_context_fp"]
+    if same_sig and same_ctx:
+        mc_planner_guard["repeat_no_progress"] += 1
+    else:
+        mc_planner_guard["repeat_no_progress"] = 0
+
+    if same_sig and same_ctx and (now - float(mc_planner_guard["last_action_ts"])) < MC_ACTION_REPEAT_COOLDOWN_SEC:
+        feedback = f"Mesma acao sem progresso ({action}) detectada; segurando repeticao agora."
+        print(f"[MINECRAFT ANTI-LOOP] {feedback}")
+        return {
+            "texto": feedback,
+            "emocao": "normal",
+            "humor": {"estado": "calma", "paciencia": 6, "delta": 0, "motivo": "anti_loop"},
+        }
+
+    if mc_planner_guard["repeat_no_progress"] >= MC_ACTION_MAX_REPEATS_NO_PROGRESS:
+        block_sec = _compute_action_block_sec(signature)
+        mc_planner_guard["blocked_until"][signature] = now + block_sec
+        mc_planner_guard["repeat_no_progress"] = 0
+        feedback = f"Loop detectado em '{action}'. Vou evitar repetir isso por {int(block_sec)}s."
+        print(f"[MINECRAFT ANTI-LOOP] {feedback}")
+        if MC_ANTI_LOOP_FORCE_STOP:
+            with suppress(Exception):
+                mc.send_action("stop", {})
+        if enviar_chat:
+            with suppress(Exception):
+                enviar_chat(feedback)
+        return {
+            "texto": feedback,
+            "emocao": "normal",
+            "humor": {"estado": "calma", "paciencia": 6, "delta": 0, "motivo": "anti_loop"},
+        }
+
     try:
         out = mc.send_action(action, payload)
     except Exception as e:
         print(f"[MINECRAFT] Falha ao executar acao planejada ({action}): {e}")
+        current_fail = int(mc_planner_guard["fail_streak"].get(signature, 0)) + 1
+        mc_planner_guard["fail_streak"][signature] = current_fail
+        if current_fail >= MC_ACTION_MAX_FAIL_STREAK:
+            block_sec = _compute_action_block_sec(signature)
+            mc_planner_guard["blocked_until"][signature] = now + block_sec
+            mc_planner_guard["fail_streak"][signature] = 0
+            print(
+                f"[MINECRAFT ANTI-LOOP] Acao {action} falhou {MC_ACTION_MAX_FAIL_STREAK}x seguidas; "
+                f"bloqueando por {int(block_sec)}s."
+            )
+            if MC_ANTI_LOOP_FORCE_STOP:
+                with suppress(Exception):
+                    mc.send_action("stop", {})
         obsidian_memory.record_minecraft_event(
             user=autor,
             command=entrada,
@@ -355,6 +480,12 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
             action=action,
         )
         return None
+
+    mc_planner_guard["last_signature"] = signature
+    mc_planner_guard["last_context_fp"] = context_fp
+    mc_planner_guard["last_action_ts"] = now
+    mc_planner_guard["fail_streak"][signature] = 0
+    mc_planner_guard["block_level"][signature] = 0
 
     feedback = summary or f"Acao executada: {action}."
     if out.get("ok") and action == "craft_tool":
@@ -752,6 +883,22 @@ print("[TWITCH] Integracao com chat iniciada em background.")
 if mc.enabled:
     def _on_minecraft_chat(user: str, text: str):
         try:
+            normalized_user = str(user or "").strip().lower()
+            normalized_text = re.sub(r"\s+", " ", str(text or "").strip().lower())
+            if normalized_text:
+                now = time.time()
+                is_dup = (
+                    normalized_user == mc_input_guard["last_user"]
+                    and normalized_text == mc_input_guard["last_text"]
+                    and (now - float(mc_input_guard["last_ts"])) < MC_COMMAND_DEBOUNCE_SEC
+                )
+                mc_input_guard["last_user"] = normalized_user
+                mc_input_guard["last_text"] = normalized_text
+                mc_input_guard["last_ts"] = now
+                if is_dup:
+                    print("[MINECRAFT] Comando repetido muito rapido; ignorando para evitar loop.")
+                    return
+
             if MC_LATEST_COMMAND_WINS and _is_minecraft_command_message(text):
                 removed = _drain_mc_chat_queue()
                 if removed:
