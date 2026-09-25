@@ -20,3 +20,12 @@ __pycache__/twitch_test_main.cpython-313.pyc
 __pycache__/twitch_chat_main.cpython-313.pyc
 mineflayer_bot/node_modules/
 mineflayer_bot/.env
+__pycache__/
+*.py[cod]
+.venv/
+.env.*
+!.env.example
+.obsidian/
+IARA/
+*.tmp
+requirements-client.lock.txt

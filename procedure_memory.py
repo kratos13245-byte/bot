@@ -1,5 +1,6 @@
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -18,7 +19,8 @@ def _default_dir() -> Path:
     raw = os.getenv("MC_PROCEDURES_DIR", "").strip()
     if raw:
         return Path(raw).expanduser()
-    return Path("IARA") / "Procedures"
+    vault = Path(os.getenv("OBSIDIAN_VAULT_DIR", ".")).expanduser()
+    return vault / (os.getenv("OBSIDIAN_MEMORY_BASE", "IARA") or "IARA") / "Procedures"
 
 
 def _extract_frontmatter(text: str):
@@ -60,7 +62,8 @@ def _read_note(path: Path):
 
 
 def _tokenize(text: str):
-    t = (text or "").lower()
+    t = unicodedata.normalize("NFKD", (text or "").lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
     return set(re.findall(r"[a-z0-9_]{2,}", t))
 
 
@@ -92,13 +95,8 @@ def buscar_procedures(query: str, top_k: int = 2) -> List[ProcedureNote]:
     if not notes:
         return []
     q = _tokenize(query)
-    ranked = sorted(
-        notes,
-        key=lambda n: _score(n, q),
-        reverse=True,
-    )
-    ranked = [n for n in ranked if _score(n, q) > 0]
-    return ranked[:top_k]
+    ranked = sorted(((_score(n, q), i, n) for i, n in enumerate(notes)), key=lambda x: (-x[0], x[1]))
+    return [n for score, _, n in ranked if score > 0][:max(0, top_k)]
 
 
 def montar_contexto_procedural(query: str, top_k: int = 2) -> str:

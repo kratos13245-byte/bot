@@ -48,7 +48,7 @@ class MinecraftBridge:
         r = requests.post(
             f"{self.base_url}/action",
             json={"action": action, "payload": payload or {}},
-            timeout=12,
+            timeout=max(12.0, float(os.getenv("MC_ACTION_TIMEOUT_SEC", "120"))),
         )
         if r.status_code >= 400:
             detail = ""
@@ -65,7 +65,10 @@ class MinecraftBridge:
                 f"(action={action}, payload={payload or {}}): {detail}"
             )
             raise requests.HTTPError(msg, response=r)
-        return r.json()
+        result = r.json()
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise requests.HTTPError(f"Acao {action} rejeitada: {result}", response=r)
+        return result
 
     def get_context(self):
         r = requests.get(f"{self.base_url}/context", timeout=8)
@@ -131,7 +134,7 @@ class MinecraftBridge:
         return text
 
     def _contains_any(self, text: str, terms: list[str]) -> bool:
-        return any(term in text for term in terms)
+        return any(re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text) for term in terms)
 
     def _strip_bot_invocation(self, text: str) -> str:
         text = text.strip()

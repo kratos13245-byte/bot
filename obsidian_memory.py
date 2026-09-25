@@ -4,6 +4,8 @@ import json
 import threading
 from datetime import datetime
 from pathlib import Path
+from action_outcomes import normalize_action_status
+from storage import write_json_atomic
 
 
 def _slug(text: str) -> str:
@@ -138,10 +140,7 @@ class ObsidianMemory:
         if not self.enabled:
             return
         self._state["updated"] = datetime.now().isoformat(timespec="seconds")
-        self.state_file.write_text(
-            json.dumps(self._state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        write_json_atomic(self.state_file, self._state)
 
     @staticmethod
     def _normalize_proc_id(proc_id: str) -> str:
@@ -631,6 +630,8 @@ class ObsidianMemory:
         return "Aprendizados recentes de execucao no Minecraft:\n" + "\n".join(lines)
 
     def _infer_auto_feedback(self, *, status: str, action: str, summary: str):
+        if status in {"planner_accepted", "command_accepted"}:
+            return None
         action = _slug(action or "unknown")
         if action in {"unknown", "command_parser", "planner_invalid", "planner_error", "command_error", "negotiation"}:
             return None
@@ -716,6 +717,7 @@ class ObsidianMemory:
             user = (user or "desconhecido").strip() or "desconhecido"
             action = (action or "unknown").strip() or "unknown"
             status = (status or "info").strip() or "info"
+            status = normalize_action_status(status, action)
             command = (command or "").strip()
             summary = (summary or "").strip()
             procedure_ids = [self._normalize_proc_id(p) for p in (procedure_ids or []) if str(p or "").strip()]

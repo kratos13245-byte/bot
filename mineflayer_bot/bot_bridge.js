@@ -50,6 +50,7 @@ let bot = null;
 let connected = false;
 let mcData = null;
 let autoTimer = null;
+let autoTickRunning = false;
 
 const state = {
   mode: "idle", // idle | follow | goto | explore | adventure | find_biome | find_resource | mine | attack
@@ -1531,7 +1532,11 @@ async function runAutonomyTick() {
 function startAutonomyLoop() {
   if (autoTimer) clearInterval(autoTimer);
   autoTimer = setInterval(() => {
-    runAutonomyTick().catch(() => {});
+    if (autoTickRunning) return;
+    autoTickRunning = true;
+    runAutonomyTick().catch((err) => {
+      console.error("[MC AUTONOMY]", err.message);
+    }).finally(() => { autoTickRunning = false; });
   }, AUTO_TICK_MS);
 }
 
@@ -1685,6 +1690,7 @@ function createBot() {
     bot.loadPlugin(pathfinder);
     const move = new Movements(bot, mcData);
     bot.pathfinder.setMovements(move);
+    startAutonomyLoop();
     console.log("[MC] Bot conectado e spawnado.");
     pushEvent("spawn", { username: MC_USERNAME });
   });
@@ -1693,7 +1699,10 @@ function createBot() {
     if (username === bot.username) return;
     console.log(`[MC CHAT] ${username}: ${message}`);
     pushEvent("chat", { username, message });
-    maybeHandleIngameCommand(username, message);
+    // Python owns command interpretation; standalone bridge mode is opt-in.
+    if (process.env.MC_STANDALONE_COMMANDS === "1") {
+      maybeHandleIngameCommand(username, message);
+    }
   });
 
   bot.on("message", (jsonMsg) => {
@@ -1770,92 +1779,97 @@ app.post("/action", async (req, res) => {
   if (!action) return res.status(400).json({ ok: false, error: "action vazia" });
   if (!bot || !connected) return res.status(503).json({ ok: false, error: "bot offline" });
 
-  let out = null;
-  switch (action) {
-    case "follow_player":
-      out = followPlayer(String(payload.player || "").trim());
-      break;
-    case "goto":
-      out = gotoPosition(payload.x, payload.y, payload.z, payload.range || 2);
-      break;
-    case "explore":
-      out = setExplore(payload.enabled !== false);
-      break;
-    case "set_adventure":
-      out = setAdventure(payload.enabled !== false);
-      break;
-    case "set_base_here":
-      out = setBaseHere();
-      break;
-    case "go_base":
-      out = goBase();
-      break;
-    case "inventory_summary":
-      out = { ok: true, action: "inventory_summary", ..._inventorySummary(20) };
-      break;
-    case "craft_tool":
-      out = await craftItem(String(payload.item || ""), Number(payload.count || 1));
-      break;
-    case "drop_item":
-      out = await dropItem(String(payload.item || ""), Number(payload.count || 1));
-      break;
-    case "place_block":
-      out = await placeBlock(
-        String(payload.item || ""),
-        Number(payload.count || 1),
-        String(payload.position || "front"),
-      );
-      break;
-    case "interact_block":
-      out = await interactBlock(
-        String(payload.block || ""),
-        Number(payload.max_distance || MC_INTERACT_MAX_DISTANCE),
-      );
-      break;
-    case "stop":
-      out = stopAll();
-      break;
-    case "set_combat":
-      out = setCombat(payload.enabled !== false);
-      break;
-    case "set_loot":
-      out = setLoot(payload.enabled !== false);
-      break;
-    case "set_survival":
-      out = setSurvival(payload.enabled !== false);
-      break;
-    case "find_biome":
-      out = findBiome(String(payload.biome || ""), String(payload.resource || ""));
-      break;
-    case "find_resource":
-      out = findResource(String(payload.resource || ""));
-      break;
-    case "mine":
-      out = startMining(String(payload.resource || ""), Number(payload.count || 1));
-      break;
-    case "attack_entity":
-      out = startAttack(String(payload.target || ""), {
-        maxDistance: Number(payload.max_distance || 28),
-        passiveOnly: payload.passive_only === true,
-        once: payload.once === true,
-      });
-      break;
-    case "hunt":
-      out = startHunt(String(payload.target || ""), Number(payload.max_distance || 28));
-      break;
-    case "stop_attack":
-      out = stopAttack();
-      break;
-    case "collect_for_item":
-      out = collectMaterialsForItem(String(payload.item || ""), Number(payload.count || 1));
-      break;
-    default:
-      out = { ok: false, error: `action desconhecida: ${action}` };
-  }
+  try {
+    let out = null;
+    switch (action) {
+      case "follow_player":
+        out = followPlayer(String(payload.player || "").trim());
+        break;
+      case "goto":
+        out = gotoPosition(payload.x, payload.y, payload.z, payload.range || 2);
+        break;
+      case "explore":
+        out = setExplore(payload.enabled !== false);
+        break;
+      case "set_adventure":
+        out = setAdventure(payload.enabled !== false);
+        break;
+      case "set_base_here":
+        out = setBaseHere();
+        break;
+      case "go_base":
+        out = goBase();
+        break;
+      case "inventory_summary":
+        out = { ok: true, action: "inventory_summary", ..._inventorySummary(20) };
+        break;
+      case "craft_tool":
+        out = await craftItem(String(payload.item || ""), Number(payload.count || 1));
+        break;
+      case "drop_item":
+        out = await dropItem(String(payload.item || ""), Number(payload.count || 1));
+        break;
+      case "place_block":
+        out = await placeBlock(
+          String(payload.item || ""),
+          Number(payload.count || 1),
+          String(payload.position || "front"),
+        );
+        break;
+      case "interact_block":
+        out = await interactBlock(
+          String(payload.block || ""),
+          Number(payload.max_distance || MC_INTERACT_MAX_DISTANCE),
+        );
+        break;
+      case "stop":
+        out = stopAll();
+        break;
+      case "set_combat":
+        out = setCombat(payload.enabled !== false);
+        break;
+      case "set_loot":
+        out = setLoot(payload.enabled !== false);
+        break;
+      case "set_survival":
+        out = setSurvival(payload.enabled !== false);
+        break;
+      case "find_biome":
+        out = findBiome(String(payload.biome || ""), String(payload.resource || ""));
+        break;
+      case "find_resource":
+        out = findResource(String(payload.resource || ""));
+        break;
+      case "mine":
+        out = startMining(String(payload.resource || ""), Number(payload.count || 1));
+        break;
+      case "attack_entity":
+        out = startAttack(String(payload.target || ""), {
+          maxDistance: Number(payload.max_distance || 28),
+          passiveOnly: payload.passive_only === true,
+          once: payload.once === true,
+        });
+        break;
+      case "hunt":
+        out = startHunt(String(payload.target || ""), Number(payload.max_distance || 28));
+        break;
+      case "stop_attack":
+        out = stopAttack();
+        break;
+      case "collect_for_item":
+        out = collectMaterialsForItem(String(payload.item || ""), Number(payload.count || 1));
+        break;
+      default:
+        out = { ok: false, error: `action desconhecida: ${action}` };
+    }
 
-  pushEvent("action", { action, payload, result: out });
-  if (!out?.ok) return res.status(400).json(out);
-  return res.json(out);
+    pushEvent("action", { action, payload, result: out });
+    if (!out?.ok) return res.status(400).json(out);
+    return res.json(out);
+  } catch (err) {
+    pushEvent("action_error", { action, error: err.message });
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.get("/context", (_req, res) => {
@@ -1870,4 +1884,3 @@ app.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
 });
 
 createBot();
-startAutonomyLoop();

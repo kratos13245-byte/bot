@@ -34,6 +34,7 @@ from ai import (
     gerar_resposta,
     planejar_acao_minecraft,
 )
+from action_outcomes import normalize_action_status
 from avatar import AvatarController
 from hear import ouvir, ouvir_live_ate_texto
 from memory import (
@@ -300,10 +301,11 @@ def _maybe_gate_minecraft_command(autor: str, entrada: str, enviar_chat=None):
     _cleanup_stale_negotiations()
 
     msg = (entrada or "").strip()
-    if not _is_minecraft_command_message(msg):
-        return {"blocked": False}
-
     author_key = (autor or "desconhecido").strip().lower()
+
+    if msg.lower() in {"pare", "parar", "stop", "iara pare", "iara, pare"}:
+        mc_pending_negotiation_by_user.pop(author_key, None)
+        return {"blocked": False}
 
     if _is_negotiation_cancel(msg):
         if author_key in mc_pending_negotiation_by_user:
@@ -328,6 +330,9 @@ def _maybe_gate_minecraft_command(autor: str, entrada: str, enviar_chat=None):
             with suppress(Exception):
                 enviar_chat(texto)
         return {"blocked": True, "reply": texto}
+
+    if not _is_minecraft_command_message(msg):
+        return {"blocked": False}
 
     now = time.time()
     if (now - mc_last_negotiation_ts) >= MC_NEGOTIATION_COOLDOWN_SEC and random.random() < max(0.0, min(1.0, MC_NEGOTIATION_PROB)):
@@ -598,6 +603,8 @@ def _tentar_acao_planejada_minecraft(autor: str, entrada: str, enviar_chat=None)
     mc_planner_guard["block_level"][signature] = 0
 
     feedback = summary or f"Acao executada: {action}."
+    if normalize_action_status("planner_ok", action) == "planner_accepted":
+        feedback = f"Acao iniciada: {action}. Conclusao ainda nao confirmada."
     if out.get("ok") and action == "craft_tool":
         item = out.get("item")
         crafted = out.get("crafted", out.get("requested", 1))

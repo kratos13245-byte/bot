@@ -1,8 +1,20 @@
 import json
 import os
+import threading
+from functools import wraps
+from storage import write_json_atomic
 from typing import Any, Dict, List, Optional
 
 ARQUIVO_MEMORIA = "memoria.json"
+_lock = threading.RLock()
+
+
+def _serialized(function):
+    @wraps(function)
+    def call(*args, **kwargs):
+        with _lock:
+            return function(*args, **kwargs)
+    return call
 
 # =========================
 # CONFIGURAÇÕES
@@ -21,6 +33,7 @@ def _memoria_vazia() -> Dict[str, List[Dict[str, Any]]]:
     }
 
 
+@_serialized
 def carregar_memoria() -> Dict[str, List[Dict[str, Any]]]:
     if not os.path.exists(ARQUIVO_MEMORIA):
         return _memoria_vazia()
@@ -41,11 +54,12 @@ def carregar_memoria() -> Dict[str, List[Dict[str, Any]]]:
         return _memoria_vazia()
 
 
+@_serialized
 def salvar_memoria_completa(memoria: Dict[str, List[Dict[str, Any]]]) -> None:
-    with open(ARQUIVO_MEMORIA, "w", encoding="utf-8") as f:
-        json.dump(memoria, f, ensure_ascii=False, indent=4)
+    write_json_atomic(ARQUIVO_MEMORIA, memoria)
 
 
+@_serialized
 def salvar_historico(tipo: str, conteudo: str, emocao: Optional[str] = None) -> None:
     memoria = carregar_memoria()
 
@@ -60,6 +74,7 @@ def salvar_historico(tipo: str, conteudo: str, emocao: Optional[str] = None) -> 
     salvar_memoria_completa(memoria)
 
 
+@_serialized
 def salvar_nota(alvo: str, nota: str, instrucao: str = "", categoria: str = "perfil") -> None:
     memoria = carregar_memoria()
     alvo = alvo.strip()
@@ -92,6 +107,7 @@ def salvar_nota(alvo: str, nota: str, instrucao: str = "", categoria: str = "per
     salvar_memoria_completa(memoria)
 
 
+@_serialized
 def editar_nota(indice: int, alvo=None, nota=None, instrucao=None, categoria=None) -> bool:
     memoria = carregar_memoria()
 
@@ -109,6 +125,7 @@ def editar_nota(indice: int, alvo=None, nota=None, instrucao=None, categoria=Non
     return True
 
 
+@_serialized
 def apagar_nota(indice: int) -> bool:
     memoria = carregar_memoria()
 
@@ -120,12 +137,14 @@ def apagar_nota(indice: int) -> bool:
     return True
 
 
+@_serialized
 def limpar_notas():
     memoria = carregar_memoria()
     memoria["notas"] = []
     salvar_memoria_completa(memoria)
 
 
+@_serialized
 def limpar_historico():
     memoria = carregar_memoria()
     memoria["historico"] = []

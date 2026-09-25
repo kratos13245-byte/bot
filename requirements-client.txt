@@ -1,0 +1,14 @@
+# Windows client; model and XTTS servers remain configured separately.
+aiohttp
+numpy<2
+requests
+mss
+Pillow
+torch==2.5.1
+torchaudio==2.5.1
+pyvts
+twitchio>=3,<4
+websockets
+sounddevice
+openai-whisper
+webrtcvad-wheels
