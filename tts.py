@@ -10,6 +10,7 @@ import numpy as np
 import requests
 
 from state import ia_falando
+from speech_pipeline import play_phrases
 
 if os.name == "nt":
     _default_xtts_dir = r"~\AppData\Local\tts\tts_models--multilingual--multi-dataset--xtts_v2"
@@ -330,7 +331,7 @@ def aplicar_emocao(texto, emocao="normal"):
         texto = texto.replace("se quiser", "")
         if texto.endswith("..."):
             texto = texto[:-3]
-        if not texto.endswith(("!", "?")):
+        if not texto.endswith((".", "!", "?")):
             texto += "."
         return texto
     if emocao == "animada":
@@ -338,10 +339,8 @@ def aplicar_emocao(texto, emocao="normal"):
             texto += "!"
         return texto
     if emocao == "negar":
-        prefixos = ["aham, ta. ", "nao. ", "claro que nao. ", "senta la. "]
-        if len(texto) > 1:
-            return random.choice(prefixos) + texto[:1].lower() + texto[1:]
-        return random.choice(prefixos) + texto.lower()
+        # The LLM already chose the words; do not invert meaning or repeat a catchphrase.
+        return texto
     if emocao == "choque":
         if not texto.endswith(("!", "?")):
             texto += "!"
@@ -416,19 +415,30 @@ def _falar_remoto(texto, language=IDIOMA_PADRAO, emocao="auto", avatar=None):
     if not url:
         raise RuntimeError("REMOTE_TTS_URL nao configurado para TTS remoto.")
 
-    payload = {
-        "text": texto,
-        "texto": texto,
-        "language": language,
-        "emotion": emocao,
-        "emocao": emocao,
-    }
+    # One full WAV per phrase: compatible with the existing /tts server.
+    # A single producer avoids concurrent XTTS inference for this response.
+    chosen_emotion = "normal" if emocao == "auto" else emocao
+    parts = dividir_texto(texto) if os.getenv("TTS_PHRASE_PIPELINE", "1") == "1" else [texto]
+    started = time.perf_counter()
+    first_audio = True
 
-    resp = requests.post(url, json=payload, timeout=240)
-    resp.raise_for_status()
+    with requests.Session() as session:
+        def synthesize(part):
+            payload = {"text": part, "texto": part, "language": language,
+                       "emotion": chosen_emotion, "emocao": chosen_emotion}
+            resp = session.post(url, json=payload, timeout=(10, 240))
+            resp.raise_for_status()
+            return _wav_bytes_to_audio_array(resp.content)
 
-    audio, sample_rate = _wav_bytes_to_audio_array(resp.content)
-    _play_audio_array(audio, sample_rate, avatar=avatar)
+        def play(result):
+            nonlocal first_audio
+            if first_audio:
+                print(f"[LATENCIA] Primeiro audio pronto: {time.perf_counter() - started:.2f}s")
+                first_audio = False
+            audio, sample_rate = result
+            _play_audio_array(audio, sample_rate, avatar=avatar)
+
+        play_phrases(parts, synthesize, play)
 
 
 def falar(

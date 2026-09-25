@@ -1,5 +1,6 @@
 import time
 import random
+import os
 
 import numpy as np
 import sounddevice as sd
@@ -19,7 +20,7 @@ FRAME_SIZE = int(TAXA_AMOSTRAGEM * FRAME_MS / 1000)
 
 VAD_AGRESSIVIDADE = 2
 MIN_FRAMES_VOZ_PARA_INICIAR = 3
-MAX_FRAMES_SILENCIO_PARA_FINALIZAR = 20
+MAX_FRAMES_SILENCIO_PARA_FINALIZAR = max(6, round(float(os.getenv("MIC_END_SILENCE_MS", "450")) / FRAME_MS))
 PRE_BUFFER_FRAMES = 10
 
 # quantidade mínima de frames já falados antes da IA poder cortar
@@ -36,6 +37,10 @@ vad = webrtcvad.Vad(VAD_AGRESSIVIDADE)
 
 
 def obter_chance_interrupcao_por_humor():
+    # Cutting the recording loses the rest of the user's sentence.
+    # Keep this theatrical effect opt-in, rather than confusing it with barge-in.
+    if os.getenv("MIC_RANDOM_INTERRUPTION", "0") != "1":
+        return 0.0
     humor = carregar_humor()
     estado = humor.get("estado", "calma")
 

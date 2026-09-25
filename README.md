@@ -35,7 +35,15 @@ O Python interpreta os comandos quando ambos os processos estão ativos. `MC_STA
 
 Mais comandos em [mineflayer_bot/README.md](mineflayer_bot/README.md).
 
-## Validação
+## Conversa e responsividade
+
+O modo de microfone não impõe mais os 10 segundos de espera após uma resposta. O fim da frase usa 450 ms de silêncio por padrão; ajuste `MIC_END_SILENCE_MS` se ela cortar suas pausas. A interrupção aleatória da gravação foi desativada (`MIC_RANDOM_INTERRUPTION=0`). Isso não implementa escuta simultânea enquanto a IARA fala.
+
+A voz remota é gerada por frases: a primeira toca assim que seu WAV chega, e a próxima é preparada durante a reprodução. `TTS_PHRASE_PIPELINE=0` restaura uma única requisição por resposta. Frases separadas podem ter diferenças de entonação; compare com a voz real antes de escolher. O log `[LATENCIA]` mede o tempo até o primeiro áudio estar pronto, a partir do início da etapa de voz, sem incluir a geração do texto.
+
+A personalidade mantém palavrões e deboche, com respostas casuais mais curtas e sem bordões obrigatórios. `AI_ALLOW_PROFANITY=0` desativa palavrões nas instruções; `AI_PROFANITY_LEVEL` controla o tom. A síntese não insere mais negativas prontas que alteravam as palavras escolhidas pela personagem. Configurações explícitas no seu `.env` prevalecem sobre os padrões.
+
+## Testes
 
 ```powershell
 .venv\Scripts\python.exe -m unittest discover -s tests -v

@@ -56,7 +56,7 @@ from minecraft_bridge import MinecraftBridge
 
 
 TEMPO_SILENCIO = 25
-COOLDOWN_MIC_LIVE_SEC = int(os.getenv("MIC_LIVE_COOLDOWN_SEC", "10"))
+COOLDOWN_MIC_LIVE_SEC = max(0.0, float(os.getenv("MIC_LIVE_COOLDOWN_SEC", "0")))
 process_lock = threading.Lock()
 modo_mic_live = False
 modo_mic_pausado = False
