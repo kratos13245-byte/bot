@@ -1,0 +1,17 @@
+{
+  "name": "iara-mineflayer-bridge",
+  "version": "1.0.0",
+  "description": "Mineflayer bridge for IARA",
+  "main": "bot_bridge.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node bot_bridge.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "mineflayer": "^4.23.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "minecraft-data": "^3.86.0"
+  }
+}

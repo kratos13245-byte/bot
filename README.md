@@ -1,0 +1,45 @@
+# IARA
+
+Personagem VTuber em português com voz, avatar, Twitch, visão de tela e ações no Minecraft. O cliente Python coordena a personagem; um bridge Node/Mineflayer controla o jogo. As experiências são registradas em Markdown compatível com Obsidian.
+
+## Cliente Windows
+
+Requisitos: Python 3.11, Node.js 22 ou 24 e FFmpeg no PATH. Para usar avatar, configure o VTube Studio e as expressões/parâmetros de `avatar.py`.
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements-client.txt
+Copy-Item .env.example .env
+cd mineflayer_bot
+npm ci
+cd ..
+```
+
+Edite `.env` com os endereços de IA/voz, servidor Minecraft e credenciais Twitch. Não substitua um `.env` existente sem preservar sua configuração. A voz de referência, modelos, tokens e avatar não fazem parte do repositório.
+
+Execute `INICIAR-MINECRAFT.cmd` e depois `INICIAR-IARA.cmd` a partir da pasta do projeto. Para habilitar o jogo, use `ENABLE_MINECRAFT=1`. O reconhecimento usa Whisper base, baixado na primeira execução. `XDG_CACHE_HOME` pode definir o local do cache.
+
+## RunPod e voz
+
+O cliente usa `AI_API_URL` e `REMOTE_TTS_URL`. As dependências do servidor XTTS estão no `requirements.txt` original; os scripts `run_runpod_stack.sh` e `run_vision_server.sh` sobem os serviços após configurar modelos e llama.cpp. O cliente Windows não precisa instalar XTTS quando a voz é remota.
+
+## Memória no Obsidian
+
+Abra `OBSIDIAN_VAULT_DIR` como cofre. A memória é gravada em `<cofre>/<OBSIDIAN_MEMORY_BASE>/` e os procedimentos são lidos de `Procedures/` dentro dessa pasta, salvo configuração explícita em `MC_PROCEDURES_DIR`.
+
+Ações demoradas, como minerar, caçar e navegar, são registradas como **aceitas**, não como concluídas. Elas não recebem reforço positivo automático só por terem começado. A confirmação automática do resultado final dessas ações ainda precisa ser implementada. Registros antigos não são reclassificados.
+
+## Comandos Minecraft
+
+O Python interpreta os comandos quando ambos os processos estão ativos. `MC_STANDALONE_COMMANDS=1` habilita o parser direto do Node para uso sem o Python; não ative os dois interpretadores juntos. A autonomia reinicia após reconexão e evita sobrepor ciclos assíncronos.
+
+Mais comandos em [mineflayer_bot/README.md](mineflayer_bot/README.md).
+
+## Validação
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+node mineflayer_bot/bridge.test.js
+```
+
+Os testes usam arquivos temporários e serviços simulados: cobrem memória concorrente, falha de gravação, resultados pendentes, busca de procedimentos, negociação, reconexão e execução de comandos. Não substituem uma sessão real com Minecraft, RunPod, Twitch e VTube Studio.
