@@ -11,6 +11,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: python -m pip install requests "numpy<2"
+      - run: python -m pip install requests "numpy<2" "aiohttp>=3.9,<4"
       - run: python -m unittest discover -s tests -v
       - run: node mineflayer_bot/bridge.test.js
+      - run: |
+          for script in setup_runpod.sh run_runpod_stack.sh run_tts_api.sh run_vision_server.sh; do
+            bash -n "$script"
+          done

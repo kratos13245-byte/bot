@@ -29,3 +29,8 @@ __pycache__/
 IARA/
 *.tmp
 requirements-client.lock.txt
+.venv-server/
+.runpod/
+runpod.env
+client-runpod.env
+teste-voz.wav

@@ -5,6 +5,7 @@ import threading
 import time
 
 import requests
+from service_auth import service_headers
 
 from contexto_visao import (
     atualizar_contexto_visao,
@@ -84,7 +85,7 @@ def _gerar_resumo_visual():
         "max_tokens": 180,
     }
 
-    r = requests.post(url, json=payload, timeout=120)
+    r = requests.post(url, json=payload, timeout=90, headers=service_headers("vision"))
     if r.status_code >= 400:
         detalhe = r.text
         if "image input is not supported" in detalhe.lower():

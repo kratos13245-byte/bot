@@ -43,7 +43,7 @@ class ResponsivenessTests(unittest.TestCase):
 
     def test_remote_speech_keeps_order_and_emotion(self):
         session = Mock()
-        session.post.side_effect = lambda url, json, timeout: Mock(content=json["text"].encode())
+        session.post.side_effect = lambda url, json, **kwargs: Mock(content=json["text"].encode())
         with patch("tts._resolver_remote_tts_url", return_value="http://voice/tts"), \
              patch("tts.requests.Session") as session_class, \
              patch("tts._wav_bytes_to_audio_array", side_effect=lambda data: (data.decode(), 24000)), \

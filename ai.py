@@ -3,6 +3,7 @@ import os
 import re
 
 import requests
+from service_auth import service_headers
 
 from contexto_minecraft import obter_contexto_minecraft
 from contexto_visao import obter_contexto_visao
@@ -375,7 +376,7 @@ def _chat_completion_content(mensagens, *, temperature=0.85, max_tokens=320, tim
         "max_tokens": max_tokens,
         "repeat_penalty": repeat_penalty,
     }
-    resposta = requests.post(_resolver_url_api(), json=payload, timeout=timeout)
+    resposta = requests.post(_resolver_url_api(), json=payload, timeout=timeout, headers=service_headers("ai"))
     resposta.raise_for_status()
     dados = resposta.json()
     return dados["choices"][0]["message"]["content"].strip()

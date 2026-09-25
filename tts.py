@@ -11,6 +11,7 @@ import requests
 
 from state import ia_falando
 from speech_pipeline import play_phrases
+from service_auth import service_headers
 
 if os.name == "nt":
     _default_xtts_dir = r"~\AppData\Local\tts\tts_models--multilingual--multi-dataset--xtts_v2"
@@ -20,7 +21,7 @@ else:
 MODELO_DIR = os.path.expanduser(os.getenv("XTTS_MODEL_DIR", _default_xtts_dir))
 REMOTE_TTS_URL = os.getenv("REMOTE_TTS_URL", "").strip()
 
-ARQUIVO_VOZ = "voz_referencia.wav"
+ARQUIVO_VOZ = os.path.expanduser(os.getenv("TTS_SPEAKER_WAV", "voz_referencia.wav"))
 IDIOMA_PADRAO = "pt"
 
 MAX_CHARS = 180
@@ -426,7 +427,7 @@ def _falar_remoto(texto, language=IDIOMA_PADRAO, emocao="auto", avatar=None):
         def synthesize(part):
             payload = {"text": part, "texto": part, "language": language,
                        "emotion": chosen_emotion, "emocao": chosen_emotion}
-            resp = session.post(url, json=payload, timeout=(10, 240))
+            resp = session.post(url, json=payload, timeout=(10, 90), headers=service_headers("tts"))
             resp.raise_for_status()
             return _wav_bytes_to_audio_array(resp.content)
 

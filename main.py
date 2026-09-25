@@ -1082,8 +1082,10 @@ print("Comandos: /mic | /mic-live | /vernotas | /verhumor | /visao on | /visao o
 print(f"No /mic-live: diga '{COMANDO_DORMIR}' para pausar e '{COMANDO_ACORDAR}' para voltar.")
 print("Atalhos de voz: 'cala a boca iara' (pausa) e 'escuta aqui iara' (retoma).")
 
-twitch_thread = iniciar_twitch_em_background()
-print("[TWITCH] Integracao com chat iniciada em background.")
+twitch_thread = None
+if os.getenv("ENABLE_TWITCH", "1") == "1":
+    twitch_thread = iniciar_twitch_em_background()
+    print("[TWITCH] Integracao com chat iniciada em background.")
 
 if mc.enabled:
     def _on_minecraft_chat(user: str, text: str):

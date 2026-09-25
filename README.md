@@ -21,6 +21,8 @@ Execute `INICIAR-MINECRAFT.cmd` e depois `INICIAR-IARA.cmd` a partir da pasta do
 
 ## RunPod e voz
 
+Para reconstruir uma instância e rodar texto, TTS e visão separadamente, siga [RUNPOD.md](RUNPOD.md). No PC, `INICIAR-CONVERSA.cmd` usa voz e visão com Minecraft/Twitch desligados.
+
 O cliente usa `AI_API_URL` e `REMOTE_TTS_URL`. As dependências do servidor XTTS estão no `requirements.txt` original; os scripts `run_runpod_stack.sh` e `run_vision_server.sh` sobem os serviços após configurar modelos e llama.cpp. O cliente Windows não precisa instalar XTTS quando a voz é remota.
 
 ## Memória no Obsidian
