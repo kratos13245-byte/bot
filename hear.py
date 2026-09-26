@@ -18,6 +18,15 @@ MODELO_WHISPER = "base"
 FRAME_MS = 30
 FRAME_SIZE = int(TAXA_AMOSTRAGEM * FRAME_MS / 1000)
 
+def _audio_device():
+    value = os.getenv("AUDIO_INPUT_DEVICE", "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
 VAD_AGRESSIVIDADE = 2
 MIN_FRAMES_VOZ_PARA_INICIAR = 3
 MAX_FRAMES_SILENCIO_PARA_FINALIZAR = max(6, round(float(os.getenv("MIC_END_SILENCE_MS", "450")) / FRAME_MS))
@@ -56,7 +65,7 @@ def obter_chance_interrupcao_por_humor():
 
 def gravar_audio(duracao=DURACAO_PADRAO, fs=TAXA_AMOSTRAGEM):
     print("🎤 Gravando...")
-    audio = sd.rec(int(duracao * fs), samplerate=fs, channels=1, dtype="int16")
+    audio = sd.rec(int(duracao * fs), samplerate=fs, channels=1, dtype="int16", device=_audio_device())
     sd.wait()
     print("🛑 Fim da gravação")
     return audio, fs
@@ -151,6 +160,7 @@ def ouvir_live_ate_texto():
             channels=1,
             dtype="int16",
             blocksize=FRAME_SIZE
+            ,device=_audio_device()
         ) as stream:
 
             while True:

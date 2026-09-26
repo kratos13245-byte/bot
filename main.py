@@ -131,6 +131,9 @@ ALLOWED_MC_ACTIONS = {
 
 
 def inicializar_avatar():
+    if os.getenv("ENABLE_AVATAR", "1") != "1":
+        print("Avatar desativado (ENABLE_AVATAR=0)")
+        return None
     try:
         avatar = AvatarController()
         avatar.connect()
@@ -1074,6 +1077,8 @@ def encerrar_avatar():
         avatar.parar_idle()
     with suppress(Exception):
         avatar.parar_piscada()
+    with suppress(Exception):
+        avatar.close()
 
 
 print("IA iniciada")
@@ -1419,6 +1424,10 @@ while True:
         ultimo_input = time.time()
         responder_personagem(entrada, origem="usuario", autor="voce")
 
+    except EOFError:
+        print("\nEntrada encerrada; finalizando...")
+        encerrar_avatar()
+        break
     except KeyboardInterrupt:
         print("\nEncerrando...")
         encerrar_avatar()

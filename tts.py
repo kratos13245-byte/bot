@@ -186,7 +186,12 @@ def _play_audio_array(audio: np.ndarray, sample_rate: int, avatar=None):
     import sounddevice as sd
 
     audio = _normalizar_audio_chunk(audio)
-    stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32")
+    device = os.getenv("AUDIO_OUTPUT_DEVICE", "").strip() or None
+    try:
+        device = int(device) if device is not None else None
+    except ValueError:
+        pass
+    stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32", device=device)
     stream.start()
     current_mouth = 0.0
     try:

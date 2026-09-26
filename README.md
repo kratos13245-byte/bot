@@ -47,6 +47,12 @@ A personalidade mantém palavrões e deboche, com respostas casuais mais curtas 
 
 ## Testes
 
+## Painel local e VTube Studio
+
+No Windows, execute `ABRIR-PAINEL.cmd`. Ele abre `http://127.0.0.1:8765` para salvar endpoints, escolher dispositivos de áudio, iniciar/parar a IARA, conversar por texto e testar o VTube Studio. O painel não expõe a porta para a rede; a chave continua apenas no `.env`.
+
+No VTube Studio, ative **Start API** em Plugin Settings antes de clicar em “Conectar e autorizar”. Na primeira conexão, aceite a permissão do plugin. Depois mapeie os parâmetros `MouthOpenAI`, `EyeXAI`, `EyeYAI`, `HeadXAI`, `HeadYAI`, `EyeBlinkLeftAI` e `EyeBlinkRightAI` em Model Settings; os parâmetros de saída variam conforme o modelo.
+
 ```powershell
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 node mineflayer_bot/bridge.test.js

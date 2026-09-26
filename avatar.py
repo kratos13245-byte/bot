@@ -2,6 +2,7 @@ import asyncio
 import threading
 import random
 import time
+import os
 from typing import Optional
 
 import pyvts
@@ -98,10 +99,16 @@ class AvatarController:
         }
 
         print("🔌 Conectando ao VTube Studio...")
-        self.vts = pyvts.vts(plugin_info=plugin_info)
-        await self.vts.connect()
-        await self.vts.request_authenticate_token()
-        await self.vts.request_authenticate()
+        self.vts = pyvts.vts(
+            plugin_info=plugin_info,
+            host=os.getenv("VTS_HOST", "127.0.0.1"),
+            port=int(os.getenv("VTS_PORT", "8001")),
+        )
+        await asyncio.wait_for(self.vts.connect(), timeout=5)
+        await asyncio.wait_for(self.vts.request_authenticate_token(), timeout=5)
+        authenticated = await asyncio.wait_for(self.vts.request_authenticate(), timeout=5)
+        if not authenticated:
+            raise RuntimeError("autorização recusada pelo VTube Studio")
 
         self._request_lock = asyncio.Lock()
 
@@ -519,3 +526,19 @@ class AvatarController:
         if self._blink_thread and self._blink_thread.is_alive():
             self._blink_thread.join(timeout=1.0)
         print("🛑 Piscada automática parada")
+
+    def close(self):
+        """Encerra os workers e a conexão do VTube Studio."""
+        self.parar_idle()
+        self.parar_piscada()
+        if self.loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(self._close_async(), self.loop)
+            future.result(timeout=3)
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        if self.thread.is_alive():
+            self.thread.join(timeout=2)
+
+    async def _close_async(self):
+        if self.vts and getattr(self.vts, "websocket", None):
+            await self.vts.close()
+        self.connected = False
