@@ -15,6 +15,13 @@ Durante a instalação do XTTS, o Coqui pergunta se você aceita a licença CPML
 
 Depois envie `voz_referencia.wav` e execute `bash run_runpod_stack.sh` dentro de `/workspace/bot`.
 
+Se preferir um único comando que também oferece iniciar os serviços ao final, use o launcher `setup`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kratos13245-byte/bot/main/setup -o /tmp/iara-setup
+bash /tmp/iara-setup
+```
+
 Escolha uma imagem Ubuntu/Debian com **Python 3.10 ou 3.11 e CUDA devel** (com `nvcc`), e permissão root/sudo para instalar pacotes. Nas portas HTTP do template, coloque `8080,8092,8081` (texto, voz e visão). A GPU precisa comportar os modelos escolhidos juntos; se faltar VRAM, use modelos menores ou serviços em Pods separados.
 
 No terminal do Pod:

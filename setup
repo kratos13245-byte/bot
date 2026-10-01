@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="https://raw.githubusercontent.com/kratos13245-byte/bot/main/bootstrap_runpod.sh"
+BOOTSTRAP="/tmp/iara-bootstrap-runpod.sh"
+TARGET="${IARA_TARGET_DIR:-/workspace/bot}"
+DATA="${IARA_DATA_DIR:-/workspace/iara-data}"
+
+echo "== IARA: baixando o instalador atualizado =="
+curl -fsSL "$REPO" -o "$BOOTSTRAP"
+
+echo "== IARA: iniciando instalação =="
+IARA_TARGET_DIR="$TARGET" IARA_DATA_DIR="$DATA" bash "$BOOTSTRAP"
+
+cd "$TARGET"
+echo
+read -r -p "Iniciar texto, TTS e visão agora? [s/N] " answer
+if [[ "$answer" =~ ^[sS][iI]?$ ]]; then
+  exec bash run_runpod_stack.sh
+fi
+
+echo "Instalação concluída. Para iniciar depois:"
+echo "  cd $TARGET"
+echo "  bash run_runpod_stack.sh"
