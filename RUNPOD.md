@@ -7,8 +7,11 @@ O Pod roda somente os serviços escolhidos. Minecraft, captura da tela, microfon
 Em um Pod novo, o caminho mais simples é baixar e executar o bootstrap. Ele instala Python 3.11, ferramentas do sistema, baixa o projeto sem criar `.git` no volume problemático e instala os três serviços:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kratos13245-byte/bot/main/bootstrap_runpod.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kratos13245-byte/bot/main/bootstrap_runpod.sh -o /tmp/bootstrap_runpod.sh
+bash /tmp/bootstrap_runpod.sh
 ```
+
+Durante a instalação do XTTS, o Coqui pergunta se você aceita a licença CPML não comercial. Responda `y` apenas se esse uso for realmente não comercial; a confirmação não é automatizada.
 
 Depois envie `voz_referencia.wav` e execute `bash run_runpod_stack.sh` dentro de `/workspace/bot`.
 

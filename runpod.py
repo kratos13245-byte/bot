@@ -94,6 +94,12 @@ def setup(selected):
     tts_python = compatible_python() if "tts" in selected else None
     if "tts" in selected and not tts_python:
         raise RuntimeError("XTTS requer Python 3.10/3.11. Instale python3.11 ou escolha uma imagem CUDA devel com essa versao.")
+    if "tts" in selected and not sys.stdin.isatty():
+        raise RuntimeError(
+            "XTTS precisa de um terminal interativo para confirmar a licença CPML da Coqui. "
+            "Baixe o bootstrap para um arquivo e execute 'bash /tmp/bootstrap_runpod.sh'; "
+            "depois responda y à pergunta da licença se o uso for não comercial."
+        )
     if any(s in selected for s in ("text", "vision")) and not shutil.which("nvcc"):
         raise RuntimeError("Falta nvcc: escolha uma imagem CUDA devel (nao apenas runtime).")
     initialize_config()
