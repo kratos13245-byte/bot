@@ -37,14 +37,14 @@ curl -fsSL "https://github.com/kratos13245-byte/bot/archive/refs/heads/main.zip"
 unzip -q "$TMP_DIR/iara.zip" -d "$TMP_DIR"
 mv "$TMP_DIR/bot-main" "$TARGET"
 
-cd "$TARGET/IARA"
+cd "$TARGET"
 echo "== IARA: instalando texto, TTS e visão =="
 "$PYTHON_BIN" runpod.py setup
 
 cat <<EOF
 
 Instalação concluída.
-Projeto: $TARGET/IARA
+Projeto: $TARGET
 Python: $PYTHON_BIN
 
 Envie voz_referencia.wav para /workspace/iara-data/voz_referencia.wav e inicie com:
