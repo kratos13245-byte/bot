@@ -13,7 +13,7 @@ fi
 
 echo "== IARA: preparando o Pod =="
 $SUDO apt-get update
-$SUDO apt-get install -y git curl unzip build-essential cmake ffmpeg libsndfile1 python3-venv
+$SUDO apt-get install -y git curl unzip build-essential cmake ffmpeg libsndfile1 python3-venv python3.11 python3.11-venv
 
 if command -v python3.11 >/dev/null 2>&1; then
   PYTHON_BIN=python3.11
