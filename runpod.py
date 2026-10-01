@@ -15,6 +15,13 @@ ROOT = Path(__file__).resolve().parent
 PORTS = {"text": "8080", "tts": "8092", "vision": "8081"}
 CONFIG = ROOT / "runpod.env"
 
+def restrict_file(path):
+    """Try to protect secrets; some RunPod mounts reject chmod."""
+    try:
+        os.chmod(path, 0o600)
+    except PermissionError:
+        print(f"Aviso: o volume não permite chmod em {path}; mantenha este arquivo privado.")
+
 
 def services(value):
     result = list(PORTS) if value == "all" else list(dict.fromkeys(value.split(",")))
@@ -45,13 +52,13 @@ def initialize_config():
     if CONFIG.exists():
         if not config().get("IARA_API_KEY"):
             with CONFIG.open("a", encoding="utf-8") as handle:
-                os.chmod(CONFIG, 0o600)
+                restrict_file(CONFIG)
                 handle.write(f"\nIARA_API_KEY={secrets.token_urlsafe(32)}\n")
         return
     data = config()
     fields = ["IARA_DATA_DIR", "LLAMA_MODEL_HF", "VISION_MODEL_HF", "TTS_SPEAKER_WAV"]
     with CONFIG.open("x", encoding="utf-8") as handle:
-        os.chmod(CONFIG, 0o600)
+        restrict_file(CONFIG)
         handle.write("# Configuration retained when setup is rerun. Keep a private backup.\n")
         handle.write("\n".join(f"{k}={data[k]}" for k in fields))
         handle.write(f"\nIARA_API_KEY={data.get('IARA_API_KEY') or secrets.token_urlsafe(32)}\n")
@@ -84,7 +91,7 @@ def setup(selected):
         source = base / "llama.cpp"
         ref = env.get("LLAMA_CPP_REF", "v0.5.0")
         if not source.exists():
-            subprocess.run(["git", "clone", "--depth", "1", "--branch", ref,
+            subprocess.run(["git", "-c", "core.filemode=false", "clone", "--depth", "1", "--branch", ref,
                             "https://github.com/ggml-org/llama.cpp.git", str(source)], check=True)
         # Reuse existing checkout/build; do not silently replace custom binaries.
         subprocess.run(["cmake", "-S", str(source), "-B", str(source / "build"),
@@ -202,7 +209,7 @@ def client_env(selected, pod_id):
         lines.append(f"{keys[service]}=https://{pod_id}-{port(service, env)}.proxy.runpod.net")
     target = ROOT / "client-runpod.env"
     with target.open("w", encoding="utf-8") as handle:
-        os.chmod(target, 0o600)
+        restrict_file(target)
         handle.write("\n".join(lines) + "\n")
     print("Configuracao privada criada: client-runpod.env. Importe no PC com configurar_runpod.py.")
 

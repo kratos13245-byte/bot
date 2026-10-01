@@ -10,7 +10,7 @@ No terminal do Pod:
 
 ```bash
 cd /workspace
-git clone https://github.com/kratos13245-byte/bot.git
+git -c core.filemode=false clone https://github.com/kratos13245-byte/bot.git
 cd bot
 bash setup_runpod.sh
 ```
