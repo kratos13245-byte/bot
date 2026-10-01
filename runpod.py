@@ -68,6 +68,7 @@ def config():
     data.setdefault("XTTS_MODEL_DIR", str(Path(base) / "tts/tts_models--multilingual--multi-dataset--xtts_v2"))
     data.setdefault("TTS_SPEAKER_WAV", str(Path(base) / "voz_referencia.wav"))
     data.setdefault("LLAMA_CACHE", str(Path(base) / "llama-cache"))
+    data.setdefault("IARA_SERVER_VENV", "/tmp/iara-venv-server")
     return data
 
 
@@ -104,9 +105,10 @@ def setup(selected):
     subprocess.run(elevated + ["apt-get", "install", "-y", "git", "cmake", "build-essential",
                               "libcurl4-openssl-dev", "libssl-dev", "ffmpeg", "libsndfile1", "python3-venv"], check=True)
     if "tts" in selected:
-        python = ROOT / ".venv-server/bin/python"
+        venv_dir = Path(env["IARA_SERVER_VENV"])
+        python = venv_dir / "bin/python"
         if not python.exists():
-            subprocess.run([tts_python, "-m", "venv", str(ROOT / ".venv-server")], check=True)
+            subprocess.run([tts_python, "-m", "venv", str(venv_dir)], check=True)
         subprocess.run([str(python), "-m", "pip", "install", "-r", str(ROOT / "requirements-server.txt")], check=True)
         # ModelManager handles its own license prompt; never silently accept it.
         download = "from TTS.utils.manage import ModelManager; import sys; ModelManager(output_prefix=sys.argv[1]).download_model('tts_models/multilingual/multi-dataset/xtts_v2')"
@@ -138,7 +140,7 @@ def setup(selected):
 
 def command(service, env):
     if service == "tts":
-        return [str(ROOT / ".venv-server/bin/python"), str(ROOT / "tts_api.py")]
+        return [str(Path(env["IARA_SERVER_VENV"]) / "bin/python"), str(ROOT / "tts_api.py")]
     prefix = "LLAMA" if service == "text" else "VISION"
     result = [env["LLAMA_BIN"], "--host", "0.0.0.0", "--port", env.get(prefix + "_PORT", PORTS[service]),
               "-c", env.get(prefix + "_CTX", "2048"), "-ngl", env.get(prefix + "_NGL", "999"),

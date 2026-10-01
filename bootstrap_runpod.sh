@@ -35,7 +35,8 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 curl -fsSL "https://github.com/kratos13245-byte/bot/archive/refs/heads/main.zip" -o "$TMP_DIR/iara.zip"
 unzip -q "$TMP_DIR/iara.zip" -d "$TMP_DIR"
-mv "$TMP_DIR/bot-main" "$TARGET"
+mkdir -p "$TARGET"
+cp -r --no-preserve=mode,ownership,timestamps "$TMP_DIR/bot-main/." "$TARGET/"
 
 cd "$TARGET"
 echo "== IARA: instalando texto, TTS e visão =="
