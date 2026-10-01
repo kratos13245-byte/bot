@@ -34,6 +34,17 @@ def fetch_source_archive(url, destination, directory_name):
     shutil.move(str(unpacked), str(destination))
     archive.unlink(missing_ok=True)
 
+def compatible_python():
+    candidates = [sys.executable, shutil.which("python3.11"), shutil.which("python3.10")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        probe = subprocess.run([candidate, "-c", "import sys; print(sys.version_info[0], sys.version_info[1])"],
+                               capture_output=True, text=True, check=False)
+        if probe.returncode == 0 and probe.stdout.strip() in {"3 10", "3 11"}:
+            return candidate
+    return None
+
 
 def services(value):
     result = list(PORTS) if value == "all" else list(dict.fromkeys(value.split(",")))
@@ -79,8 +90,9 @@ def initialize_config():
 def setup(selected):
     if sys.platform != "linux":
         raise RuntimeError("Execute setup dentro do Pod Linux, nao no PC Windows.")
-    if "tts" in selected and not ((3, 10) <= sys.version_info[:2] < (3, 12)):
-        raise RuntimeError("XTTS requer Python 3.10/3.11. Escolha uma imagem CUDA devel com essa versao.")
+    tts_python = compatible_python() if "tts" in selected else None
+    if "tts" in selected and not tts_python:
+        raise RuntimeError("XTTS requer Python 3.10/3.11. Instale python3.11 ou escolha uma imagem CUDA devel com essa versao.")
     if any(s in selected for s in ("text", "vision")) and not shutil.which("nvcc"):
         raise RuntimeError("Falta nvcc: escolha uma imagem CUDA devel (nao apenas runtime).")
     initialize_config()
@@ -94,7 +106,7 @@ def setup(selected):
     if "tts" in selected:
         python = ROOT / ".venv-server/bin/python"
         if not python.exists():
-            subprocess.run([sys.executable, "-m", "venv", str(ROOT / ".venv-server")], check=True)
+            subprocess.run([tts_python, "-m", "venv", str(ROOT / ".venv-server")], check=True)
         subprocess.run([str(python), "-m", "pip", "install", "-r", str(ROOT / "requirements-server.txt")], check=True)
         # ModelManager handles its own license prompt; never silently accept it.
         download = "from TTS.utils.manage import ModelManager; import sys; ModelManager(output_prefix=sys.argv[1]).download_model('tts_models/multilingual/multi-dataset/xtts_v2')"
