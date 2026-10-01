@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import zipfile
 
 ROOT = Path(__file__).resolve().parent
 PORTS = {"text": "8080", "tts": "8092", "vision": "8081"}
@@ -21,6 +22,17 @@ def restrict_file(path):
         os.chmod(path, 0o600)
     except PermissionError:
         print(f"Aviso: o volume não permite chmod em {path}; mantenha este arquivo privado.")
+
+def fetch_source_archive(url, destination, directory_name):
+    archive = Path("/tmp") / (directory_name + ".zip")
+    unpacked = Path("/tmp") / directory_name
+    if unpacked.exists():
+        shutil.rmtree(unpacked)
+    urllib.request.urlretrieve(url, archive)
+    with zipfile.ZipFile(archive) as handle:
+        handle.extractall("/tmp")
+    shutil.move(str(unpacked), str(destination))
+    archive.unlink(missing_ok=True)
 
 
 def services(value):
@@ -91,8 +103,16 @@ def setup(selected):
         source = base / "llama.cpp"
         ref = env.get("LLAMA_CPP_REF", "v0.5.0")
         if not source.exists():
-            subprocess.run(["git", "-c", "core.filemode=false", "clone", "--depth", "1", "--branch", ref,
-                            "https://github.com/ggml-org/llama.cpp.git", str(source)], check=True)
+            try:
+                subprocess.run(["git", "-c", "core.filemode=false", "clone", "--depth", "1", "--branch", ref,
+                                "https://github.com/ggml-org/llama.cpp.git", str(source)], check=True)
+            except subprocess.CalledProcessError:
+                print("Git não funciona neste volume; baixando o código do llama.cpp em ZIP.", flush=True)
+                archive_ref = ref.lstrip("v")
+                fetch_source_archive(
+                    f"https://github.com/ggml-org/llama.cpp/archive/refs/tags/{ref}.zip",
+                    source, f"llama.cpp-{archive_ref}",
+                )
         # Reuse existing checkout/build; do not silently replace custom binaries.
         subprocess.run(["cmake", "-S", str(source), "-B", str(source / "build"),
                         "-DGGML_CUDA=ON", "-DBUILD_SHARED_LIBS=OFF", "-DCMAKE_BUILD_TYPE=Release"], check=True)
