@@ -4,6 +4,14 @@ O Pod roda somente os serviços escolhidos. Minecraft, captura da tela, microfon
 
 ## Preparar uma vez por instância
 
+Em um Pod novo, o caminho mais simples é baixar e executar o bootstrap. Ele instala Python 3.11, ferramentas do sistema, baixa o projeto sem criar `.git` no volume problemático e instala os três serviços:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kratos13245-byte/bot/main/IARA/bootstrap_runpod.sh | bash
+```
+
+Depois envie `voz_referencia.wav` e execute `bash run_runpod_stack.sh` dentro de `/workspace/bot/IARA`.
+
 Escolha uma imagem Ubuntu/Debian com **Python 3.10 ou 3.11 e CUDA devel** (com `nvcc`), e permissão root/sudo para instalar pacotes. Nas portas HTTP do template, coloque `8080,8092,8081` (texto, voz e visão). A GPU precisa comportar os modelos escolhidos juntos; se faltar VRAM, use modelos menores ou serviços em Pods separados.
 
 No terminal do Pod:
