@@ -51,6 +51,7 @@ from obsidian_memory import ObsidianMemory
 from procedure_memory import buscar_procedures, montar_contexto_procedural_de_notas
 from tts import falar
 from twitch_bot import TWITCH_TRIGGER_MODE, TwitchChatBridge
+from youtube_bot import YouTubeChatBridge
 from vision_local import VisionWatcher
 from minecraft_bridge import MinecraftBridge
 
@@ -895,10 +896,11 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
         prompt_ia = entrada
         historico_usuario = entrada
 
-        if origem == "twitch":
-            prompt_ia = f'Mensagem no chat da Twitch de "{autor}": {entrada}'
+        if origem in {"twitch", "youtube"}:
+            canal = "Twitch" if origem == "twitch" else "YouTube Live"
+            prompt_ia = f'Mensagem no chat do {canal} de "{autor}": {entrada}'
             historico_usuario = f"{autor}: {entrada}"
-            print(f"\n[TWITCH] {autor} > {entrada}")
+            print(f"\n[{canal.upper()}] {autor} > {entrada}")
         elif origem == "minecraft":
             prompt_ia = f'Mensagem no chat do Minecraft de "{autor}": {entrada}'
             historico_usuario = f"{autor}: {entrada}"
@@ -920,8 +922,8 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
         if avatar:
             avatar.aplicar_expressao_completa(humor["estado"], emocao)
 
-        if origem == "twitch":
-            print(f"[IA->TWITCH] {texto} ({emocao})")
+        if origem in {"twitch", "youtube"}:
+            print(f"[IA->{origem.upper()}] {texto} ({emocao})")
         elif origem == "minecraft":
             print(f"[IA->MINECRAFT] {texto} ({emocao})")
         else:
@@ -935,7 +937,7 @@ def responder_personagem(entrada: str, *, origem: str = "usuario", autor: str = 
             try:
                 enviar_chat(texto)
             except Exception as e:
-                print(f"[TWITCH] Falha ao enfileirar resposta no chat: {e}")
+                print(f"[{origem.upper()}] Falha ao enfileirar resposta no chat: {e}")
 
         falar(
             texto,
@@ -1047,6 +1049,54 @@ def iniciar_twitch_em_background():
     return thread
 
 
+def iniciar_youtube_em_background():
+    def runner():
+        async def bot_runner():
+            incoming_queue = asyncio.Queue()
+            outgoing_queue = asyncio.Queue()
+            bot = YouTubeChatBridge(incoming_queue, outgoing_queue)
+            loop = asyncio.get_running_loop()
+
+            def enviar_chat_threadsafe(texto: str):
+                future = asyncio.run_coroutine_threadsafe(outgoing_queue.put({"text": texto}), loop)
+                future.result()
+
+            async def processar_chat():
+                while True:
+                    msg = await incoming_queue.get()
+                    try:
+                        await asyncio.to_thread(
+                            responder_personagem,
+                            str(msg.get("text", "")),
+                            origem="youtube",
+                            autor=str(msg.get("user", "desconhecido")),
+                            enviar_chat=enviar_chat_threadsafe,
+                        )
+                    except Exception as exc:
+                        print(f"[YOUTUBE] Erro processando mensagem: {exc}")
+                    finally:
+                        incoming_queue.task_done()
+
+            consumer_task = asyncio.create_task(processar_chat())
+            try:
+                await bot.start()
+            except Exception as exc:
+                print(f"[YOUTUBE] Integracao encerrada com erro: {exc}")
+            finally:
+                consumer_task.cancel()
+                await bot.close()
+                await asyncio.gather(consumer_task, return_exceptions=True)
+
+        try:
+            asyncio.run(bot_runner())
+        except Exception as exc:
+            print(f"[YOUTUBE] Integracao encerrada com erro: {exc}")
+
+    thread = threading.Thread(target=runner, daemon=True, name="youtube-chat-thread")
+    thread.start()
+    return thread
+
+
 def encerrar_avatar():
     global mc_narracao_thread, mc_chat_worker_thread, mc_self_train_thread
     mc_narracao_stop.set()
@@ -1091,6 +1141,11 @@ twitch_thread = None
 if os.getenv("ENABLE_TWITCH", "1") == "1":
     twitch_thread = iniciar_twitch_em_background()
     print("[TWITCH] Integracao com chat iniciada em background.")
+
+youtube_thread = None
+if os.getenv("ENABLE_YOUTUBE", "0") == "1":
+    youtube_thread = iniciar_youtube_em_background()
+    print("[YOUTUBE] Integracao com chat iniciada em background.")
 
 if mc.enabled:
     def _on_minecraft_chat(user: str, text: str):

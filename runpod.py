@@ -146,7 +146,7 @@ def setup(selected):
 
 def command(service, env):
     if service == "tts":
-        return [str(Path(env["IARA_SERVER_VENV"]) / "bin/python"), str(ROOT / "tts_api.py")]
+        return [str(Path(env.get("IARA_SERVER_VENV", "/tmp/iara-venv-server")) / "bin/python"), str(ROOT / "tts_api.py")]
     prefix = "LLAMA" if service == "text" else "VISION"
     result = [env["LLAMA_BIN"], "--host", "0.0.0.0", "--port", env.get(prefix + "_PORT", PORTS[service]),
               "-c", env.get(prefix + "_CTX", "2048"), "-ngl", env.get(prefix + "_NGL", "999"),

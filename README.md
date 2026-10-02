@@ -15,7 +15,11 @@ npm ci
 cd ..
 ```
 
-Edite `.env` com os endereços de IA/voz, servidor Minecraft e credenciais Twitch. Não substitua um `.env` existente sem preservar sua configuração. A voz de referência, modelos, tokens e avatar não fazem parte do repositório.
+Edite `.env` com os endereços de IA/voz, servidor Minecraft e credenciais Twitch/YouTube. Não substitua um `.env` existente sem preservar sua configuração. A voz de referência, modelos, tokens e avatar não fazem parte do repositório.
+
+## YouTube Live
+
+Para ativar o chat do YouTube, configure `ENABLE_YOUTUBE=1`, um `YOUTUBE_ACCESS_TOKEN` OAuth com acesso ao YouTube Data API e informe `YOUTUBE_VIDEO_ID` (ou o `YOUTUBE_LIVE_CHAT_ID` diretamente). O bridge lê mensagens e responde no mesmo chat; deixe `ENABLE_YOUTUBE=0` quando não estiver transmitindo.
 
 Execute `INICIAR-MINECRAFT.cmd` e depois `INICIAR-IARA.cmd` a partir da pasta do projeto. Para habilitar o jogo, use `ENABLE_MINECRAFT=1`. O reconhecimento usa Whisper base, baixado na primeira execução. `XDG_CACHE_HOME` pode definir o local do cache.
 
