@@ -36,7 +36,24 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 curl -fsSL "https://github.com/kratos13245-byte/bot/archive/refs/heads/main.zip" -o "$TMP_DIR/iara.zip"
 unzip -q "$TMP_DIR/iara.zip" -d "$TMP_DIR"
 mkdir -p "$TARGET"
-cp -r --no-preserve=mode,ownership,timestamps "$TMP_DIR/bot-main/." "$TARGET/"
+"$PYTHON_BIN" - "$TMP_DIR/bot-main" "$TARGET" <<'PY'
+import os
+import shutil
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+for item in source.rglob("*"):
+    relative = item.relative_to(source)
+    destination = target / relative
+    if item.is_dir():
+        destination.mkdir(parents=True, exist_ok=True)
+    elif item.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with item.open("rb") as source_file, destination.open("wb") as target_file:
+            shutil.copyfileobj(source_file, target_file)
+PY
 
 cd "$TARGET"
 echo "== IARA: instalando texto, TTS e visão =="
