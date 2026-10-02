@@ -1055,11 +1055,6 @@ def iniciar_youtube_em_background():
             incoming_queue = asyncio.Queue()
             outgoing_queue = asyncio.Queue()
             bot = YouTubeChatBridge(incoming_queue, outgoing_queue)
-            loop = asyncio.get_running_loop()
-
-            def enviar_chat_threadsafe(texto: str):
-                future = asyncio.run_coroutine_threadsafe(outgoing_queue.put({"text": texto}), loop)
-                future.result()
 
             async def processar_chat():
                 while True:
@@ -1070,7 +1065,9 @@ def iniciar_youtube_em_background():
                             str(msg.get("text", "")),
                             origem="youtube",
                             autor=str(msg.get("user", "desconhecido")),
-                            enviar_chat=enviar_chat_threadsafe,
+                            # YouTube é entrada de voz; a IARA fala pelo TTS local
+                            # e não publica uma resposta escrita no chat.
+                            enviar_chat=None,
                         )
                     except Exception as exc:
                         print(f"[YOUTUBE] Erro processando mensagem: {exc}")

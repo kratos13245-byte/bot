@@ -19,7 +19,7 @@ Edite `.env` com os endereços de IA/voz, servidor Minecraft e credenciais Twitc
 
 ## YouTube Live
 
-Para ativar o chat do YouTube, configure `ENABLE_YOUTUBE=1`, um `YOUTUBE_ACCESS_TOKEN` OAuth com acesso ao YouTube Data API e informe `YOUTUBE_VIDEO_ID` (ou o `YOUTUBE_LIVE_CHAT_ID` diretamente). O bridge lê mensagens e responde no mesmo chat; deixe `ENABLE_YOUTUBE=0` quando não estiver transmitindo.
+Para ativar o chat do YouTube, configure `ENABLE_YOUTUBE=1`, um `YOUTUBE_ACCESS_TOKEN` OAuth com acesso ao YouTube Data API e informe `YOUTUBE_VIDEO_ID` (ou o `YOUTUBE_LIVE_CHAT_ID` diretamente). O bridge lê mensagens e a IARA responde falando pelo TTS local; ela não publica texto de volta no chat. Deixe `ENABLE_YOUTUBE=0` quando não estiver transmitindo.
 
 Execute `INICIAR-MINECRAFT.cmd` e depois `INICIAR-IARA.cmd` a partir da pasta do projeto. Para habilitar o jogo, use `ENABLE_MINECRAFT=1`. O reconhecimento usa Whisper base, baixado na primeira execução. `XDG_CACHE_HOME` pode definir o local do cache.
 
