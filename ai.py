@@ -376,6 +376,9 @@ def _chat_completion_content(mensagens, *, temperature=0.85, max_tokens=320, tim
         "max_tokens": max_tokens,
         "repeat_penalty": repeat_penalty,
     }
+    think = os.getenv("AI_THINK", "").strip().lower()
+    if think in {"0", "1", "true", "false"}:
+        payload["think"] = think in {"1", "true"}
     resposta = requests.post(_resolver_url_api(), json=payload, timeout=timeout, headers=service_headers("ai"))
     resposta.raise_for_status()
     dados = resposta.json()
