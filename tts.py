@@ -1,8 +1,11 @@
 import io
+import asyncio
 import numbers
 import os
 import random
 import re
+import subprocess
+import tempfile
 import time
 import wave
 
@@ -447,6 +450,31 @@ def _falar_remoto(texto, language=IDIOMA_PADRAO, emocao="auto", avatar=None):
         play_phrases(parts, synthesize, play)
 
 
+def _falar_edge_local(texto, avatar=None):
+    """Fallback leve para testar o cliente local sem instalar XTTS/Coqui."""
+    import edge_tts
+
+    voice = os.getenv("TTS_EDGE_VOICE", "pt-BR-ThalitaNeural")
+    rate = os.getenv("TTS_EDGE_RATE", "+5%")
+    pitch = os.getenv("TTS_EDGE_PITCH", "+12Hz")
+
+    async def synthesize(path):
+        communicate = edge_tts.Communicate(texto, voice=voice, rate=rate, pitch=pitch)
+        await communicate.save(path)
+
+    with tempfile.TemporaryDirectory(prefix="iara-tts-") as folder:
+        mp3_path = os.path.join(folder, "fala.mp3")
+        wav_path = os.path.join(folder, "fala.wav")
+        asyncio.run(synthesize(mp3_path))
+        subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-i", mp3_path, "-ar", str(SAMPLE_RATE), "-ac", "1", wav_path],
+            check=True,
+        )
+        with open(wav_path, "rb") as audio_file:
+            audio, sample_rate = _wav_bytes_to_audio_array(audio_file.read())
+        _play_audio_array(audio, sample_rate, avatar=avatar)
+
+
 def falar(
     texto,
     speaker_wav=ARQUIVO_VOZ,
@@ -471,14 +499,17 @@ def falar(
             return
 
         print("Reproduzindo TTS local...")
-        audio, sample_rate, emocao_escolhida = gerar_audio_array_local(
-            texto=texto,
-            speaker_wav=speaker_wav,
-            language=language,
-            emocao=emocao,
-        )
-        print(f"Emocao usada: {emocao_escolhida}")
-        _play_audio_array(audio, sample_rate, avatar=avatar)
+        try:
+            audio, sample_rate, emocao_escolhida = gerar_audio_array_local(
+                texto=texto, speaker_wav=speaker_wav, language=language, emocao=emocao,
+            )
+            print(f"Emocao usada: {emocao_escolhida}")
+            _play_audio_array(audio, sample_rate, avatar=avatar)
+        except (ImportError, ModuleNotFoundError) as exc:
+            if "TTS" not in str(exc):
+                raise
+            print("XTTS/Coqui ausente; usando voz Edge local para teste.")
+            _falar_edge_local(texto, avatar=avatar)
 
     except Exception as e:
         print(f"Erro no TTS: {e}")

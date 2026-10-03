@@ -11,4 +11,5 @@ twitchio>=3,<4
 websockets
 sounddevice
 openai-whisper
+edge-tts
 webrtcvad-wheels
