@@ -30,6 +30,8 @@ IARA/
 *.tmp
 requirements-client.lock.txt
 .venv-server/
+.venv-xtts/
+work/local-xtts/
 .runpod/
 runpod.env
 client-runpod.env

@@ -29,6 +29,8 @@ Para reconstruir uma instância e rodar texto, TTS e visão separadamente, siga 
 
 O cliente usa `AI_API_URL` e `REMOTE_TTS_URL`. As dependências do servidor XTTS estão no `requirements.txt` original; os scripts `run_runpod_stack.sh` e `run_vision_server.sh` sobem os serviços após configurar modelos e llama.cpp. O cliente Windows não precisa instalar XTTS quando a voz é remota.
 
+Para testar o stack inteiro no Windows, rode `setup_local_xtts.ps1` em um PowerShell e aceite a licença CPML da Coqui. Depois coloque `voz_referencia.wav` na raiz, inicie `INICIAR-TTS-LOCAL.cmd` e configure `REMOTE_TTS_URL=http://127.0.0.1:8092` no `.env`. Texto e visão podem usar o Ollama local em `http://127.0.0.1:11434/v1`.
+
 ## Memória no Obsidian
 
 Abra `OBSIDIAN_VAULT_DIR` como cofre. A memória é gravada em `<cofre>/<OBSIDIAN_MEMORY_BASE>/` e os procedimentos são lidos de `Procedures/` dentro dessa pasta, salvo configuração explícita em `MC_PROCEDURES_DIR`.
