@@ -7,7 +7,13 @@ import re
 import threading
 import time
 import random
+import sys
 from contextlib import suppress
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _load_local_env(env_path=".env"):
